@@ -14,9 +14,20 @@ import {
   saveMonthlyBudgetValues,
   type CustomBudgetItemSaveInput,
 } from "@/server/budget/monthly-overview";
+import { setRecurringRuleMonthExcluded } from "@/server/budget/recurring-rules";
 
 type BudgetActionResult = { ok: true } | { ok: false; error: string };
 type AddCustomBudgetItemActionResult = { ok: true; item: MonthlyCustomBudgetItem } | { ok: false; error: string };
+type DirectDebitExclusionActionResult =
+  | {
+      ok: true;
+      state: {
+        recurringRuleId: string;
+        month: string;
+        excludedFromForecast: boolean;
+      };
+    }
+  | { ok: false; error: string };
 
 function parseCustomItems(formData: FormData, accountIds: readonly string[]) {
   const itemIds = [
@@ -105,6 +116,32 @@ export async function deleteCustomBudgetItemAction(formData: FormData): Promise<
     return { ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Não foi possível eliminar a linha.";
+    return { ok: false, error: message };
+  }
+}
+
+export async function setDirectDebitForecastExclusionAction(
+  formData: FormData,
+): Promise<DirectDebitExclusionActionResult> {
+  const recurringRuleId = String(formData.get("recurringRuleId") ?? "").trim();
+  const month = normaliseMonth(String(formData.get("month") ?? ""));
+  const excludedFromForecast = String(formData.get("excludedFromForecast") ?? "false") === "true";
+
+  try {
+    if (!recurringRuleId) {
+      throw new Error("Débito directo inválido.");
+    }
+
+    const state = await setRecurringRuleMonthExcluded({
+      recurringRuleId,
+      month,
+      excludedFromForecast,
+    });
+
+    revalidatePath("/orcamento");
+    return { ok: true, state };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Não foi possível actualizar a previsão.";
     return { ok: false, error: message };
   }
 }

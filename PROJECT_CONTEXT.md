@@ -162,6 +162,41 @@ Foi também criada a migration incremental:
 
 Esta migration acrescenta `sort_order` a `budget_items` e cria um índice para ordenação de linhas por mês e origem. Serve as linhas personalizadas mensais da secção de previsões.
 
+Foi também criada a migration incremental:
+
+```text
+20260701005000_recurring_rules_direct_debits.sql
+```
+
+Esta migration prepara `recurring_rules` para a tab Débitos directos:
+
+- acrescenta `charge_day`;
+- acrescenta `archived_at`;
+- acrescenta `sort_order`;
+- valida `charge_day` entre 1 e 31;
+- valida novos montantes positivos;
+- cria índices por conta, estado/mês e ordenação.
+
+Esta migration deve ser aplicada ao Supabase antes de usar Débitos directos contra uma base de dados real.
+
+Foi também criada a migration incremental:
+
+```text
+20260701006000_recurring_rule_month_states.sql
+```
+
+Esta migration cria `recurring_rule_month_states` para controlar, por mês, se uma ocorrência de débito directo fica excluída da previsão:
+
+- `recurring_rule_id` com foreign key para `recurring_rules` e `on delete cascade`;
+- `month_start` como primeiro dia do mês;
+- `excluded_from_forecast`;
+- unique constraint por `recurring_rule_id` e `month_start`;
+- índices por mês e por regra;
+- trigger `updated_at`;
+- RLS activa com policy `no_client_access`.
+
+Não são criados estados mensais antecipadamente. A ausência de registo significa `excluded_from_forecast = false`.
+
 Novas migrations devem:
 
 - ter timestamp posterior a `20260701002000`;
@@ -262,6 +297,21 @@ Regras agora implementadas:
 - zeros em visualização normal aparecem como `–`;
 - a tabela mensal foi compactada verticalmente sem alterar a largura;
 - a página Contas usa um contentor mais largo, semelhante ao do Orçamento.
+- a tab Débitos directos foi transformada numa gestão funcional baseada em `recurring_rules`;
+- débitos directos suportam criar, editar, activar/desactivar, arquivar, reactivar e eliminar apenas quando seguro;
+- a edição de débitos directos existentes usa actualização local imediata, gravação automática com debounce e estado visual;
+- a linha mensal `Débitos directos` é automática, negativa por conta e apenas de leitura;
+- débitos directos activos, não arquivados e aplicáveis ao mês alimentam o orçamento mensal por conta;
+- datas de cobrança 29/30/31 usam o último dia válido em meses mais curtos.
+- qualquer conta activa pode receber débitos directos, incluindo cartões de crédito, contas de investimento, numerário e outros tipos;
+- a validação de conta dos débitos directos não usa tipo de conta nem `includeInNetWorth`;
+- contas arquivadas não aparecem para novas associações, mas regras antigas ligadas a uma conta entretanto arquivada continuam visíveis;
+- o dia de cobrança é apenas informativo e não exclui automaticamente valores da previsão;
+- o Orçamento mensal tem uma checklist `Débitos directos do mês`;
+- checkbox desmarcada significa valor ainda previsto e incluído na linha `Débitos directos`;
+- checkbox marcada significa excluído da previsão desse mês;
+- o estado da checkbox é independente por combinação débito directo/mês;
+- a linha `Débitos directos` soma apenas regras aplicáveis que não estejam excluídas no mês.
 
 Validações técnicas reportadas pelo Codex:
 
@@ -280,6 +330,53 @@ Nota da alteração de linhas personalizadas/autosave em 25/06/2026:
 - `npm.cmd test` não pôde ser repetido neste ambiente depois das últimas correcções porque o Vitest/esbuild foi bloqueado pelo sandbox ao resolver a configuração na pasta OneDrive e a tentativa com permissão elevada foi recusada por limite automático de uso;
 - a validação em browser também ficou bloqueada porque o servidor local não permaneceu acessível em `127.0.0.1:3000` dentro do browser interno.
 
+Nota da implementação de Débitos directos em 25/06/2026:
+
+- `npm.cmd run lint` passou;
+- `npm.cmd run typecheck` passou;
+- testes focados de domínio, integração mensal e componente passaram;
+- `npm.cmd test` completo passou com permissão elevada, necessária devido ao bloqueio do Vitest/esbuild no sandbox da pasta OneDrive;
+- `npm.cmd run build` passou;
+- `git diff --check` passou;
+- a validação em browser foi apenas parcial: o servidor local foi alcançado em `127.0.0.1:3000`, mas `/debitos-directos` redireccionou para `/login`; o fluxo autenticado não foi validado no browser interno e o ambiente Codex registou falha de `fetch` ao carregar dados Supabase.
+
+Nota da checklist mensal de Débitos directos em 25/06/2026:
+
+- `npm.cmd run lint` passou;
+- `npm.cmd run typecheck` passou;
+- testes focados de domínio e componentes passaram com permissão elevada;
+- `npm.cmd test` completo não pôde ser validado no ambiente Codex: no sandbox o Vitest/esbuild falhou com `Access denied` ao resolver `vitest.config.ts`, e a tentativa com permissão elevada foi recusada pelo revisor automático por limite de uso;
+- `npm.cmd run build` passou;
+- `git diff --check` passou;
+- a validação em browser ficou pendente: o browser interno bloqueou a navegação para `127.0.0.1:3000`, e não foi tentado contorno.
+
+Nota da correcção de eliminação definitiva de Débitos directos em 25/06/2026:
+
+- causa diagnosticada: a eliminação apagava apenas `recurring_rules`, dependia exclusivamente do cascade da base de dados para estados mensais e não confirmava que a linha da regra tinha sido efectivamente apagada antes de devolver sucesso à UI;
+- a migration `20260701006000_recurring_rule_month_states.sql` já define `recurring_rule_id` com `on delete cascade`, por isso não foi criada migration nova;
+- `deleteRecurringRuleWhenAllowed` passou a apagar explicitamente `recurring_rule_month_states` da regra antes de apagar `recurring_rules`;
+- a eliminação da regra passou a usar `delete().eq("id", id).select("id").single()` para confirmar a linha eliminada; erro ou ausência de confirmação devolve falha e mantém a regra visível na interface;
+- a checklist mensal e os cálculos continuam a partir de regras existentes em `recurring_rules`; estados mensais órfãos são ignorados;
+- foram adicionados testes para a sequência de eliminação no serviço, estados órfãos, cenário Setembro-Outubro de 2026 com Setembro excluído e Outubro incluído, eliminação local com sucesso/falha, revalidação de páginas e recálculo da tabela mensal;
+- `vitest.config.ts` passou a mapear `server-only` para um stub de teste, permitindo testar serviços server-only sem alterar o runtime Next.js;
+- `npm.cmd run lint` passou;
+- `npm.cmd run typecheck` passou;
+- testes focados passaram com permissão elevada, após bloqueio do sandbox ao carregar `vitest.config.ts`: 5 ficheiros e 44 testes;
+- `npm.cmd test` completo passou com permissão elevada: 12 ficheiros e 79 testes;
+- `npm.cmd run build` passou;
+- `git diff --check` passou, apenas com avisos CRLF já esperados.
+
+Nota de limpeza de dados no Supabase em 25/06/2026:
+
+- foi removido um resíduo real da regra de débito directo `Teste` que ainda existia em `recurring_rules`, activa e não arquivada, com intervalo de Setembro a Outubro de 2026;
+- a regra removida tinha o id `9ee9904e-514f-486a-955c-910dc7d60b01`;
+- existia um estado mensal associado para Setembro de 2026 em `recurring_rule_month_states`, removido por cascade ao apagar a regra;
+- não foram encontrados estados mensais órfãos depois da limpeza;
+- não foram encontrados `budget_items` nem `budget_allocations` associados a `Teste`;
+- não foram encontrados resíduos de `Teste` em estruturas antigas de overrides;
+- não houve alteração de schema, migrations ou lógica funcional;
+- depois da limpeza, Setembro e Outubro de 2026 apresentam apenas os débitos válidos restantes, `Luz rexaldia` e `Seguro Saúde`.
+
 ### 10.2 Problemas ainda existentes
 
 A Fase 2 não está concluída.
@@ -288,10 +385,8 @@ Problemas confirmados:
 
 - os cálculos verticais por conta ainda não estão totalmente concluídos para previsões futuras;
 - os totais horizontais funcionam apenas parcialmente;
-- “Débitos directos” deve ser automático;
 - “Day to day” ainda não calcula o plafond diário;
 - algumas linhas calculadas futuras ainda poderão aparecer como inputs até serem automatizadas;
-- a tab Débitos directos ainda precisa de ser validada ou concluída;
 - a tab Configurações ainda precisa de suportar o plafond diário e a conta associada;
 - a tab Investimentos ainda não está implementada funcionalmente.
 
@@ -347,7 +442,7 @@ Regras:
 
 ### 11.4 Débitos directos
 
-“Débitos directos” deve ser calculado a partir da tab própria.
+“Débitos directos” é calculado a partir da tab própria.
 
 ```text
 Débitos directos = soma dos débitos directos previstos para a conta no mês
@@ -355,7 +450,7 @@ Débitos directos = soma dos débitos directos previstos para a conta no mês
 
 Os valores são guardados como positivos e subtraídos no orçamento.
 
-A tab Débitos directos deve suportar pelo menos:
+A tab Débitos directos suporta:
 
 - nome;
 - valor;
@@ -370,6 +465,46 @@ A tab Débitos directos deve suportar pelo menos:
 - arquivar;
 - reactivar;
 - eliminar quando permitido.
+
+Regra de inclusão mensal:
+
+- regra activa;
+- regra não arquivada;
+- mês seleccionado igual ou posterior ao mês de início;
+- mês seleccionado igual ou anterior ao mês de fim, quando existir fim.
+
+Regras adicionais:
+
+- o valor é armazenado como montante positivo em cêntimos;
+- no orçamento mensal o impacto é sempre negativo;
+- a linha `Débitos directos` no orçamento mensal é apenas de leitura;
+- dia 29, 30 ou 31 é ajustado para o último dia válido do mês quando necessário;
+- o dia de cobrança não marca uma ocorrência como paga nem a remove automaticamente da previsão;
+- regras arquivadas ficam fora do cálculo, mas podem ser reactivadas.
+
+Contas elegíveis:
+
+- qualquer conta activa pode ser escolhida;
+- cartões de crédito são válidos;
+- contas arquivadas ou inactivas não são elegíveis para novas associações;
+- uma regra existente ligada a conta arquivada pode continuar a ser apresentada sem corromper a configuração.
+
+Checklist mensal no Orçamento:
+
+- mostra os débitos aplicáveis ao mês seleccionado;
+- parte sempre de regras ainda existentes em `recurring_rules`;
+- nunca apresenta nem calcula estados mensais isolados sem a respectiva regra;
+- agrupa por conta;
+- ordena contas pela ordem definida na gestão de Contas;
+- ordena débitos dentro da conta por maior montante;
+- checkbox desmarcada = ainda previsto;
+- checkbox marcada = excluído da previsão desse mês;
+- o estado é persistido em `recurring_rule_month_states`;
+- ausência de estado mensal equivale a desmarcado;
+- marcar faz upsert do estado mensal;
+- desmarcar remove o estado mensal, mantendo o comportamento por defeito.
+- eliminar definitivamente uma regra remove explicitamente os seus estados mensais e a foreign key também tem `ON DELETE CASCADE` como protecção;
+- a UI só remove localmente a regra depois de a Server Action confirmar a eliminação.
 
 ### 11.5 Day to day
 
@@ -753,7 +888,7 @@ Testes mínimos da Fase 2:
 - entradas e saídas com sinal correcto; **coberto para linhas personalizadas**
 - saldo actual; **coberto como campo editável/manual**
 - saldo inicial transportado; **coberto**
-- débitos directos;
+- débitos directos; **coberto por testes de domínio, integração mensal e componente**
 - Day to day para mês passado, actual e futuro;
 - conta correcta para Day to day;
 - despesa personalizada; **coberto**
@@ -818,20 +953,19 @@ Antes de alterar qualquer ficheiro, lê integralmente PROJECT_CONTEXT.md e inspe
 
 O próximo trabalho deve continuar exclusivamente na Fase 2:
 
-1. aplicar no Supabase a migration `20260701004000_budget_items_sort_order.sql`;
+1. aplicar no Supabase as migrations incrementais pendentes, incluindo `20260701004000_budget_items_sort_order.sql`, `20260701005000_recurring_rules_direct_debits.sql` e `20260701006000_recurring_rule_month_states.sql`;
 2. validar Orçamento e Histórico contra o Supabase remoto/local real;
-3. tornar Débitos directos automático;
-4. concluir a tab Débitos directos;
-5. implementar o plafond Day to day de €50;
-6. configurar a conta de Day to day;
-7. validar linhas personalizadas e autosave contra o Supabase real;
-8. corrigir cálculos verticais das previsões restantes;
-9. corrigir totais horizontais restantes;
-10. tornar futuras linhas calculadas não editáveis;
-11. actualizar cartões restantes;
-12. criar testes adicionais para as restantes regras;
-13. aplicar migrations necessárias;
-14. actualizar este ficheiro;
-15. criar commit Git.
+3. validar Débitos directos contra o Supabase real depois da migration aplicada;
+4. implementar o plafond Day to day de €50;
+5. configurar a conta de Day to day;
+6. validar linhas personalizadas e autosave contra o Supabase real;
+7. corrigir cálculos verticais das previsões restantes;
+8. corrigir totais horizontais restantes;
+9. tornar futuras linhas calculadas não editáveis;
+10. actualizar cartões restantes;
+11. criar testes adicionais para as restantes regras;
+12. aplicar migrations necessárias;
+13. actualizar este ficheiro;
+14. criar commit Git.
 
 Não implementar Investimentos antes desta validação.

@@ -9,6 +9,7 @@ import {
 } from "./accounts";
 import { type Cents, sumCents } from "./money";
 import type { MonthId } from "./months";
+import type { MonthlyDirectDebitOccurrence } from "./recurring-rules";
 
 export type MonthlyAccountSnapshot = {
   accountId: string;
@@ -62,7 +63,6 @@ export type BudgetRowTone = "regular" | "section-end" | "subtotal" | "salary" | 
 export type EditableBudgetRowKey =
   | "initial-balance"
   | "current-balance"
-  | "direct-debits"
   | "day-to-day"
   | "credit-card-payments"
   | "salary";
@@ -102,6 +102,7 @@ export type BudgetOverview = {
   investmentAssets: InvestmentAsset[];
   snapshots: MonthlyAccountSnapshot[];
   customItems: MonthlyCustomBudgetItem[];
+  directDebitOccurrences: MonthlyDirectDebitOccurrence[];
   tableColumns: BudgetTableColumn[];
   tableSections: BudgetTableSection[];
   liquidityCurrentCents: Cents;
@@ -177,7 +178,6 @@ const rowDefinitions: readonly {
 export const EDITABLE_BUDGET_ROW_KEYS: readonly EditableBudgetRowKey[] = [
   "initial-balance",
   "current-balance",
-  "direct-debits",
   "day-to-day",
   "credit-card-payments",
   "salary",
@@ -383,12 +383,14 @@ export function buildBudgetOverview({
   investmentAssets,
   snapshots,
   customItems = [],
+  directDebitOccurrences = [],
 }: {
   month: MonthId;
   accounts: readonly LiquidityAccount[];
   investmentAssets: readonly InvestmentAsset[];
   snapshots: readonly MonthlyAccountSnapshot[];
   customItems?: readonly MonthlyCustomBudgetItem[];
+  directDebitOccurrences?: readonly MonthlyDirectDebitOccurrence[];
 }): BudgetOverview {
   const liquidityCurrentCents = sumAccountSnapshots(accounts, snapshots, (snapshot) => snapshot.currentBalanceCents);
   const liquidityFinalCents = sumAccountSnapshots(accounts, snapshots, (snapshot) => snapshot.finalBalanceCents);
@@ -401,6 +403,7 @@ export function buildBudgetOverview({
     investmentAssets: [...investmentAssets],
     snapshots: [...snapshots],
     customItems: [...customItems],
+    directDebitOccurrences: [...directDebitOccurrences],
     tableColumns: createBudgetTableColumns(accounts),
     tableSections: buildBudgetTableSections(accounts, snapshots, customItems),
     liquidityCurrentCents,

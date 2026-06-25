@@ -6,7 +6,12 @@ import { UI_TEXT } from "@/content/ui-text";
 import { FIRST_MONTH, addMonths, formatMonthLabel, normaliseMonth } from "@/domain/budget/months";
 import { formatEuroCents } from "@/domain/budget/money";
 import { getSupabaseBudgetOverview } from "@/server/budget/monthly-overview";
-import { addCustomBudgetItemAction, deleteCustomBudgetItemAction, saveMonthlyBudgetAction } from "./actions";
+import {
+  addCustomBudgetItemAction,
+  deleteCustomBudgetItemAction,
+  saveMonthlyBudgetAction,
+  setDirectDebitForecastExclusionAction,
+} from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -149,6 +154,7 @@ export default async function BudgetPage({ searchParams }: BudgetPageProps) {
             saveBudgetAction={saveMonthlyBudgetAction}
             addCustomItemAction={addCustomBudgetItemAction}
             deleteCustomItemAction={deleteCustomBudgetItemAction}
+            setDirectDebitExcludedAction={setDirectDebitForecastExclusionAction}
           />
         </>
       ) : null}

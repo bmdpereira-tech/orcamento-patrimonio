@@ -11,6 +11,7 @@ import type {
   MonthlyCustomBudgetItem,
 } from "@/domain/budget/monthly-view";
 import { buildBudgetOverview, EDITABLE_BUDGET_ROW_KEYS } from "@/domain/budget/monthly-view";
+import type { MonthlyDirectDebitOccurrence } from "@/domain/budget/recurring-rules";
 import { getAccountDisplayName, type LiquidityAccount } from "@/domain/budget/accounts";
 import {
   formatEditableEuroCents,
@@ -25,6 +26,16 @@ import { UI_TEXT } from "@/content/ui-text";
 
 type BudgetActionResult = { ok: true } | { ok: false; error: string };
 type AddCustomBudgetItemActionResult = { ok: true; item: MonthlyCustomBudgetItem } | { ok: false; error: string };
+type DirectDebitExclusionActionResult =
+  | {
+      ok: true;
+      state: {
+        recurringRuleId: string;
+        month: string;
+        excludedFromForecast: boolean;
+      };
+    }
+  | { ok: false; error: string };
 
 type MonthlyBudgetTableProps = {
   overview: BudgetOverview;
@@ -32,6 +43,7 @@ type MonthlyBudgetTableProps = {
   saveBudgetAction?: (formData: FormData) => Promise<BudgetActionResult>;
   addCustomItemAction?: (formData: FormData) => Promise<AddCustomBudgetItemActionResult>;
   deleteCustomItemAction?: (formData: FormData) => Promise<BudgetActionResult>;
+  setDirectDebitExcludedAction?: (formData: FormData) => Promise<DirectDebitExclusionActionResult>;
 };
 
 type EditableCellValues = Record<EditableBudgetRowKey, Record<string, string>>;
@@ -119,8 +131,6 @@ function getSnapshotValue(snapshot: MonthlyAccountSnapshot, rowKey: EditableBudg
       return snapshot.initialBalanceCents;
     case "current-balance":
       return snapshot.currentBalanceCents;
-    case "direct-debits":
-      return snapshot.directDebitsCents;
     case "day-to-day":
       return snapshot.dayToDayCents;
     case "credit-card-payments":
@@ -170,6 +180,33 @@ function createCustomItemStates(overview: BudgetOverview) {
   return overview.customItems.map((item) => createCustomItemState(item, overview.accounts));
 }
 
+function createDirectDebitExclusionState(overview: BudgetOverview) {
+  return Object.fromEntries(
+    overview.directDebitOccurrences.map((occurrence) => [
+      occurrence.ruleId,
+      occurrence.excludedFromForecast,
+    ]),
+  ) as Record<string, boolean>;
+}
+
+function calculateDirectDebitAmountsByAccount(
+  occurrences: readonly MonthlyDirectDebitOccurrence[],
+  excludedByRuleId: Readonly<Record<string, boolean>>,
+) {
+  const amountsByAccount = new Map<string, Cents>();
+
+  for (const occurrence of occurrences) {
+    if (excludedByRuleId[occurrence.ruleId]) {
+      continue;
+    }
+
+    const current = amountsByAccount.get(occurrence.accountId) ?? 0;
+    amountsByAccount.set(occurrence.accountId, sumCents([current, -Math.abs(occurrence.amountCents)]));
+  }
+
+  return amountsByAccount;
+}
+
 function parseCustomItemState(item: LocalCustomBudgetItem, accounts: readonly LiquidityAccount[]) {
   return {
     id: item.id,
@@ -186,12 +223,19 @@ function calculateDisplaySnapshots({
   overview,
   cellValues,
   customItems,
+  directDebitExclusions,
 }: {
   overview: BudgetOverview;
   cellValues: EditableCellValues;
   customItems: readonly MonthlyCustomBudgetItem[];
+  directDebitExclusions: Readonly<Record<string, boolean>>;
 }) {
   const snapshotByAccountId = new Map(overview.snapshots.map((snapshot) => [snapshot.accountId, snapshot]));
+  const hasDirectDebitOccurrences = overview.directDebitOccurrences.length > 0;
+  const directDebitAmountsByAccount = calculateDirectDebitAmountsByAccount(
+    overview.directDebitOccurrences,
+    directDebitExclusions,
+  );
 
   return overview.accounts.map((account): MonthlyAccountSnapshot => {
     const sourceSnapshot = snapshotByAccountId.get(account.id);
@@ -200,7 +244,9 @@ function calculateDisplaySnapshots({
         ? parseCurrencyInput(cellValues["initial-balance"][account.id] ?? "0")
         : sourceSnapshot?.initialBalanceCents ?? 0;
     const currentBalanceCents = parseCurrencyInput(cellValues["current-balance"][account.id] ?? "0");
-    const directDebitsCents = parseCurrencyInput(cellValues["direct-debits"][account.id] ?? "0");
+    const directDebitsCents = hasDirectDebitOccurrences
+      ? directDebitAmountsByAccount.get(account.id) ?? 0
+      : sourceSnapshot?.directDebitsCents ?? 0;
     const dayToDayCents = parseCurrencyInput(cellValues["day-to-day"][account.id] ?? "0");
     const creditCardPaymentsCents = parseCurrencyInput(cellValues["credit-card-payments"][account.id] ?? "0");
     const salaryCents = parseCurrencyInput(cellValues.salary[account.id] ?? "0");
@@ -413,24 +459,159 @@ function CustomItemMoneyCell({
   );
 }
 
+function MonthlyDirectDebitsChecklist({
+  occurrences,
+  excludedByRuleId,
+  saveStatus,
+  saveError,
+  onToggle,
+}: {
+  occurrences: readonly MonthlyDirectDebitOccurrence[];
+  excludedByRuleId: Readonly<Record<string, boolean>>;
+  saveStatus: SaveStatus;
+  saveError: string | null;
+  onToggle: (occurrence: MonthlyDirectDebitOccurrence, excludedFromForecast: boolean) => void;
+}) {
+  const groupedOccurrences = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        accountId: string;
+        accountName: string;
+        accountSortOrder: number;
+        items: MonthlyDirectDebitOccurrence[];
+      }
+    >();
+
+    for (const occurrence of occurrences) {
+      const group = groups.get(occurrence.accountId) ?? {
+        accountId: occurrence.accountId,
+        accountName: occurrence.accountName ?? "Conta arquivada",
+        accountSortOrder: occurrence.accountSortOrder ?? Number.MAX_SAFE_INTEGER,
+        items: [],
+      };
+      group.items.push(occurrence);
+      groups.set(occurrence.accountId, group);
+    }
+
+    return [...groups.values()]
+      .map((group) => ({
+        ...group,
+        items: [...group.items].sort(
+          (left, right) =>
+            Math.abs(right.amountCents) - Math.abs(left.amountCents) ||
+            left.description.localeCompare(right.description),
+        ),
+      }))
+      .sort(
+        (left, right) =>
+          left.accountSortOrder - right.accountSortOrder || left.accountName.localeCompare(right.accountName),
+      );
+  }, [occurrences]);
+  const statusLabel =
+    saveStatus === "saving"
+      ? "A guardar…"
+      : saveStatus === "saved"
+        ? "Guardado"
+        : saveStatus === "error"
+          ? "Erro ao guardar"
+          : null;
+
+  return (
+    <aside className="rounded-lg border border-slate-200 bg-white shadow-sm 2xl:w-[360px]">
+      <div className="border-b border-slate-200 px-4 py-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold text-slate-950">Débitos directos do mês</h2>
+            <p className="mt-1 text-xs leading-5 text-slate-600">
+              Marque os valores que já estão reflectidos no saldo actual ou que não deverão ocorrer neste mês.
+            </p>
+          </div>
+          {statusLabel ? (
+            <p
+              aria-live="polite"
+              title={saveError ?? undefined}
+              className={cn(
+                "shrink-0 whitespace-nowrap text-xs font-medium",
+                saveStatus === "error" ? "text-red-700" : "text-slate-500",
+              )}
+            >
+              {statusLabel}
+            </p>
+          ) : null}
+        </div>
+      </div>
+
+      {saveError && saveStatus === "error" ? (
+        <div className="border-b border-red-100 bg-red-50 px-4 py-2 text-sm text-red-800">{saveError}</div>
+      ) : null}
+
+      {groupedOccurrences.length === 0 ? (
+        <p className="px-4 py-3 text-sm text-slate-700">Não existem débitos directos previstos para este mês.</p>
+      ) : (
+        <div className="divide-y divide-slate-100">
+          {groupedOccurrences.map((group) => (
+            <section key={group.accountId} className="px-4 py-3">
+              <h3 className="text-sm font-semibold text-slate-900">{group.accountName}</h3>
+              <ul className="mt-2 space-y-2">
+                {group.items.map((occurrence) => {
+                  const checked = excludedByRuleId[occurrence.ruleId] === true;
+
+                  return (
+                    <li key={occurrence.ruleId} className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
+                      <label className="grid grid-cols-[18px_1fr_auto] items-start gap-2 text-sm text-slate-800">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(event) => onToggle(occurrence, event.target.checked)}
+                          title="Excluir da previsão deste mês"
+                          aria-label={`Excluir ${occurrence.description} da previsão deste mês`}
+                          className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-700 focus:ring-brand-600"
+                        />
+                        <span className={cn("min-w-0", checked && "text-slate-500 line-through")}>
+                          {occurrence.description}
+                        </span>
+                        <span className={cn("whitespace-nowrap tabular-nums", checked ? "text-slate-400" : "text-red-700")}>
+                          {formatEuroCents(-Math.abs(occurrence.amountCents))}
+                        </span>
+                      </label>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ))}
+        </div>
+      )}
+    </aside>
+  );
+}
+
 export function MonthlyBudgetTable({
   overview,
   editable = false,
   saveBudgetAction,
   addCustomItemAction,
   deleteCustomItemAction,
+  setDirectDebitExcludedAction,
 }: MonthlyBudgetTableProps) {
   const [cellValues, setCellValues] = useState(() => createEditableCellValues(overview));
   const [customItems, setCustomItems] = useState(() => createCustomItemStates(overview));
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [directDebitSaveStatus, setDirectDebitSaveStatus] = useState<SaveStatus>("idle");
+  const [directDebitSaveError, setDirectDebitSaveError] = useState<string | null>(null);
+  const [directDebitExclusions, setDirectDebitExclusions] = useState(() => createDirectDebitExclusionState(overview));
   const [isAddingCustomItem, setIsAddingCustomItem] = useState(false);
   const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
 
   const overviewRef = useRef(overview);
   const cellValuesRef = useRef(cellValues);
   const customItemsRef = useRef(customItems);
+  const directDebitExclusionsRef = useRef(directDebitExclusions);
+  const directDebitSaveVersionsRef = useRef(new Map<string, number>());
   const saveBudgetActionRef = useRef(saveBudgetAction);
+  const setDirectDebitExcludedActionRef = useRef(setDirectDebitExcludedAction);
   const debounceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveInFlightRef = useRef<Promise<void> | null>(null);
   const saveAfterCurrentRef = useRef(false);
@@ -448,6 +629,7 @@ export function MonthlyBudgetTable({
       overview,
       cellValues,
       customItems: parsedCustomItems,
+      directDebitExclusions,
     });
 
     return buildBudgetOverview({
@@ -456,8 +638,9 @@ export function MonthlyBudgetTable({
       investmentAssets: overview.investmentAssets,
       snapshots,
       customItems: parsedCustomItems,
+      directDebitOccurrences: overview.directDebitOccurrences,
     });
-  }, [cellValues, overview, parsedCustomItems]);
+  }, [cellValues, directDebitExclusions, overview, parsedCustomItems]);
   const customItemById = useMemo(
     () => new Map(customItems.map((item) => [item.id, item])),
     [customItems],
@@ -478,6 +661,17 @@ export function MonthlyBudgetTable({
       return next;
     });
   }, []);
+
+  const updateDirectDebitExclusions = useCallback(
+    (updater: (current: Record<string, boolean>) => Record<string, boolean>) => {
+      setDirectDebitExclusions((current) => {
+        const next = updater(current);
+        directDebitExclusionsRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
 
   const flushSave = useCallback(async () => {
     if (debounceTimeoutRef.current) {
@@ -691,17 +885,74 @@ export function MonthlyBudgetTable({
     [deleteCustomItemAction, deletingItemId, flushSave, scheduleSave, updateCustomItems],
   );
 
+  const handleDirectDebitToggle = useCallback(
+    async (occurrence: MonthlyDirectDebitOccurrence, excludedFromForecast: boolean) => {
+      const action = setDirectDebitExcludedActionRef.current;
+
+      if (!action) {
+        return;
+      }
+
+      const previousValue = directDebitExclusionsRef.current[occurrence.ruleId] === true;
+      const version = (directDebitSaveVersionsRef.current.get(occurrence.ruleId) ?? 0) + 1;
+      directDebitSaveVersionsRef.current.set(occurrence.ruleId, version);
+
+      updateDirectDebitExclusions((current) => ({
+        ...current,
+        [occurrence.ruleId]: excludedFromForecast,
+      }));
+      setDirectDebitSaveStatus("saving");
+      setDirectDebitSaveError(null);
+
+      const formData = new FormData();
+      formData.set("recurringRuleId", occurrence.ruleId);
+      formData.set("month", occurrence.month);
+      formData.set("excludedFromForecast", String(excludedFromForecast));
+
+      const result = await action(formData);
+
+      if (directDebitSaveVersionsRef.current.get(occurrence.ruleId) !== version) {
+        return;
+      }
+
+      if (!result.ok) {
+        updateDirectDebitExclusions((current) => ({
+          ...current,
+          [occurrence.ruleId]: previousValue,
+        }));
+        setDirectDebitSaveStatus("error");
+        setDirectDebitSaveError(result.error);
+        return;
+      }
+
+      updateDirectDebitExclusions((current) => ({
+        ...current,
+        [occurrence.ruleId]: result.state.excludedFromForecast,
+      }));
+      setDirectDebitSaveStatus("saved");
+      setDirectDebitSaveError(null);
+    },
+    [updateDirectDebitExclusions],
+  );
+
   useEffect(() => {
     saveBudgetActionRef.current = saveBudgetAction;
   }, [saveBudgetAction]);
 
   useEffect(() => {
+    setDirectDebitExcludedActionRef.current = setDirectDebitExcludedAction;
+  }, [setDirectDebitExcludedAction]);
+
+  useEffect(() => {
     const nextCellValues = createEditableCellValues(overview);
     const nextCustomItems = createCustomItemStates(overview);
+    const nextDirectDebitExclusions = createDirectDebitExclusionState(overview);
 
     overviewRef.current = overview;
     cellValuesRef.current = nextCellValues;
     customItemsRef.current = nextCustomItems;
+    directDebitExclusionsRef.current = nextDirectDebitExclusions;
+    directDebitSaveVersionsRef.current.clear();
     dirtyRef.current = false;
     saveAfterCurrentRef.current = false;
     lastSavedSignatureRef.current = createSaveSignature({
@@ -717,8 +968,11 @@ export function MonthlyBudgetTable({
 
     setCellValues(nextCellValues);
     setCustomItems(nextCustomItems);
+    setDirectDebitExclusions(nextDirectDebitExclusions);
     setSaveStatus("idle");
     setSaveError(null);
+    setDirectDebitSaveStatus("idle");
+    setDirectDebitSaveError(null);
   }, [overview]);
 
   useEffect(() => {
@@ -747,7 +1001,8 @@ export function MonthlyBudgetTable({
           : null;
 
   return (
-    <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+    <div className="grid items-start gap-4 2xl:grid-cols-[minmax(0,max-content)_360px]">
+      <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
       <div className="flex flex-col gap-1 border-b border-slate-200 px-4 py-2 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-base font-semibold text-slate-950">{UI_TEXT.budget.monthlyTable}</h2>
         {editable && statusLabel ? (
@@ -970,6 +1225,17 @@ export function MonthlyBudgetTable({
           </tbody>
         </table>
       </div>
-    </section>
+      </section>
+
+      <MonthlyDirectDebitsChecklist
+        occurrences={displayOverview.directDebitOccurrences}
+        excludedByRuleId={directDebitExclusions}
+        saveStatus={directDebitSaveStatus}
+        saveError={directDebitSaveError}
+        onToggle={(occurrence, excludedFromForecast) =>
+          void handleDirectDebitToggle(occurrence, excludedFromForecast)
+        }
+      />
+    </div>
   );
 }

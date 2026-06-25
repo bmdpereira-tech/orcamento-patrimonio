@@ -2,47 +2,118 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LiquidityAccount } from "../domain/budget/accounts";
 import type { Cents } from "../domain/budget/money";
+import type { MonthId } from "../domain/budget/months";
 import {
   buildBudgetOverview,
   createEmptySnapshot,
   type MonthlyCustomBudgetItem,
 } from "../domain/budget/monthly-view";
+import type { MonthlyDirectDebitOccurrence } from "../domain/budget/recurring-rules";
 import { MonthlyBudgetTable } from "./monthly-budget-table";
 
-const accounts: LiquidityAccount[] = [
+const accountA: LiquidityAccount = {
+  id: "account-a",
+  name: "Conta A",
+  shortName: "Conta A",
+  isCreditCard: false,
+  startMonth: "2026-07",
+  showInBudget: true,
+  includeInNetWorth: true,
+  sortOrder: 10,
+};
+const creditCardAccount: LiquidityAccount = {
+  id: "cc-santander",
+  name: "CC Santander",
+  shortName: "CC Santander",
+  accountType: "credit_card",
+  isCreditCard: true,
+  startMonth: "2026-07",
+  showInBudget: true,
+  includeInNetWorth: true,
+  sortOrder: 20,
+};
+const accountB: LiquidityAccount = {
+  id: "account-b",
+  name: "Conta B",
+  shortName: "Conta B",
+  isCreditCard: false,
+  startMonth: "2026-07",
+  showInBudget: true,
+  includeInNetWorth: true,
+  sortOrder: 30,
+};
+const accounts: LiquidityAccount[] = [accountA];
+
+const directDebitOccurrences: MonthlyDirectDebitOccurrence[] = [
   {
-    id: "account-a",
-    name: "Conta A",
-    shortName: "Conta A",
-    isCreditCard: false,
-    startMonth: "2026-07",
-    showInBudget: true,
-    includeInNetWorth: true,
-    sortOrder: 10,
+    ruleId: "electricity",
+    month: "2026-07",
+    description: "Electricidade",
+    accountId: "account-a",
+    accountName: "Conta A",
+    accountSortOrder: 10,
+    amountCents: 120_00,
+    chargeDay: 1,
+    excludedFromForecast: false,
+  },
+  {
+    ruleId: "water",
+    month: "2026-07",
+    description: "Água",
+    accountId: "account-a",
+    accountName: "Conta A",
+    accountSortOrder: 10,
+    amountCents: 35_00,
+    chargeDay: 31,
+    excludedFromForecast: false,
+  },
+  {
+    ruleId: "chatgpt",
+    month: "2026-07",
+    description: "ChatGPT",
+    accountId: "cc-santander",
+    accountName: "CC Santander",
+    accountSortOrder: 20,
+    amountCents: 23_00,
+    chargeDay: 10,
+    excludedFromForecast: false,
   },
 ];
 
+function expectCheckboxChecked(element: HTMLElement, checked: boolean) {
+  expect((element as HTMLInputElement).checked).toBe(checked);
+}
+
 function createOverview({
   currentBalanceCents = 75_00,
+  directDebitsCents = 0,
   customItems = [],
+  overviewAccounts = accounts,
+  occurrences = [],
+  month = "2026-07",
 }: {
   currentBalanceCents?: Cents;
+  directDebitsCents?: Cents;
   customItems?: MonthlyCustomBudgetItem[];
+  overviewAccounts?: LiquidityAccount[];
+  occurrences?: MonthlyDirectDebitOccurrence[];
+  month?: MonthId;
 } = {}) {
   return buildBudgetOverview({
-    month: "2026-07",
-    accounts,
+    month,
+    accounts: overviewAccounts,
     investmentAssets: [],
-    snapshots: [
-      {
-        ...createEmptySnapshot("account-a"),
+    snapshots: overviewAccounts.map((account) => ({
+        ...createEmptySnapshot(account.id),
         initialBalanceCents: 100_00,
         realisedMovementsCents: currentBalanceCents - 100_00,
         currentBalanceCents,
-        finalBalanceCents: currentBalanceCents,
-      },
-    ],
+        directDebitsCents: account.id === "account-a" ? directDebitsCents : 0,
+        subtotalBeforeSalaryCents: currentBalanceCents + (account.id === "account-a" ? directDebitsCents : 0),
+        finalBalanceCents: currentBalanceCents + (account.id === "account-a" ? directDebitsCents : 0),
+      })),
     customItems,
+    directDebitOccurrences: occurrences,
   });
 }
 
@@ -57,6 +128,230 @@ describe("MonthlyBudgetTable", () => {
     expect(screen.queryByLabelText("Movimentos realizados — Conta A")).toBeNull();
     expect(screen.getByLabelText("Saldo actual — Conta A")).toBeTruthy();
     expect(screen.getByLabelText("Saldo inicial — Conta A")).toBeTruthy();
+  });
+
+  it("renders direct debits as automatic read-only values", () => {
+    render(<MonthlyBudgetTable overview={createOverview({ currentBalanceCents: 100_00, directDebitsCents: -45_00 })} editable />);
+
+    expect(screen.queryByLabelText("Débitos directos — Conta A")).toBeNull();
+    expect(within(screen.getByRole("row", { name: /Débitos directos/ })).getAllByText("(45,00 €)").length).toBeGreaterThan(0);
+    expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("55,00 €").length).toBeGreaterThan(0);
+  });
+
+  it("shows zero direct debits as a dash", () => {
+    render(<MonthlyBudgetTable overview={createOverview({ directDebitsCents: 0 })} editable />);
+
+    expect(within(screen.getByRole("row", { name: /Débitos directos/ })).getAllByText("–").length).toBeGreaterThan(0);
+  });
+
+  it("lists applicable monthly direct debits grouped by account and sorted by amount", () => {
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          overviewAccounts: [accountA, creditCardAccount, accountB],
+          occurrences: directDebitOccurrences,
+        })}
+        editable
+      />,
+    );
+
+    const checklist = screen.getByRole("heading", { name: "Débitos directos do mês" }).closest("aside");
+    const checklistText = checklist?.textContent ?? "";
+
+    expect(checklistText.indexOf("Conta A")).toBeLessThan(checklistText.indexOf("CC Santander"));
+    expect(checklistText.indexOf("Electricidade")).toBeLessThan(checklistText.indexOf("Água"));
+    expectCheckboxChecked(screen.getByLabelText("Excluir Electricidade da previsão deste mês"), false);
+    expectCheckboxChecked(screen.getByLabelText("Excluir ChatGPT da previsão deste mês"), false);
+  });
+
+  it("uses unchecked direct debits in the forecast, including credit card columns", () => {
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          currentBalanceCents: 100_00,
+          overviewAccounts: [accountA, creditCardAccount],
+          occurrences: directDebitOccurrences,
+        })}
+        editable
+      />,
+    );
+
+    const directDebitRow = screen.getByRole("row", { name: /Débitos directos/ });
+    expect(within(directDebitRow).getByText("(155,00 €)")).toBeTruthy();
+    expect(within(directDebitRow).getByText("(23,00 €)")).toBeTruthy();
+    expect(within(screen.getByRole("row", { name: /Saldo final/ })).getByText("(55,00 €)")).toBeTruthy();
+  });
+
+  it("excludes and re-includes a monthly direct debit immediately", async () => {
+    const setDirectDebitExcludedAction = vi.fn(async (formData: FormData) => ({
+      ok: true as const,
+      state: {
+        recurringRuleId: String(formData.get("recurringRuleId")),
+        month: String(formData.get("month")),
+        excludedFromForecast: String(formData.get("excludedFromForecast")) === "true",
+      },
+    }));
+
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          currentBalanceCents: 100_00,
+          occurrences: directDebitOccurrences,
+        })}
+        editable
+        setDirectDebitExcludedAction={setDirectDebitExcludedAction}
+      />,
+    );
+
+    const checkbox = screen.getByLabelText("Excluir Electricidade da previsão deste mês");
+    fireEvent.click(checkbox);
+
+    expect(
+      within(screen.getByRole("row", { name: /Débitos directos/ })).getAllByText("(35,00 €)").length,
+    ).toBeGreaterThan(0);
+    expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("65,00 €").length).toBeGreaterThan(0);
+    await waitFor(() => expect(setDirectDebitExcludedAction).toHaveBeenCalledTimes(1));
+    expect((setDirectDebitExcludedAction.mock.calls[0]?.[0] as FormData).get("excludedFromForecast")).toBe("true");
+
+    fireEvent.click(checkbox);
+
+    expect(
+      within(screen.getByRole("row", { name: /Débitos directos/ })).getAllByText("(155,00 €)").length,
+    ).toBeGreaterThan(0);
+    await waitFor(() => expect(setDirectDebitExcludedAction).toHaveBeenCalledTimes(2));
+    expect((setDirectDebitExcludedAction.mock.calls[1]?.[0] as FormData).get("excludedFromForecast")).toBe("false");
+  });
+
+  it("loads a persisted monthly exclusion and keeps another month independent", () => {
+    const { rerender } = render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          occurrences: [{ ...directDebitOccurrences[0], excludedFromForecast: true }],
+        })}
+        editable
+      />,
+    );
+
+    expectCheckboxChecked(screen.getByLabelText("Excluir Electricidade da previsão deste mês"), true);
+    expect(within(screen.getByRole("row", { name: /Débitos directos/ })).getAllByText("–").length).toBeGreaterThan(0);
+
+    rerender(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          month: "2026-08",
+          occurrences: [{ ...directDebitOccurrences[0], month: "2026-08", excludedFromForecast: false }],
+        })}
+        editable
+      />,
+    );
+
+    expectCheckboxChecked(screen.getByLabelText("Excluir Electricidade da previsão deste mês"), false);
+    expect(
+      within(screen.getByRole("row", { name: /Débitos directos/ })).getAllByText("(120,00 €)").length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("removes a deleted direct debit from the checklist, direct debit row and final balance", () => {
+    const occurrence = {
+      ...directDebitOccurrences[0],
+      ruleId: "teste",
+      month: "2026-10" as const,
+      description: "Teste",
+      amountCents: 120_00,
+      excludedFromForecast: false,
+    };
+    const { rerender } = render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          currentBalanceCents: 100_00,
+          month: "2026-10",
+          occurrences: [occurrence],
+        })}
+        editable
+      />,
+    );
+
+    expectCheckboxChecked(screen.getByLabelText("Excluir Teste da previsão deste mês"), false);
+    expect(
+      within(screen.getByRole("row", { name: /Débitos directos/ })).getAllByText("(120,00 €)").length,
+    ).toBeGreaterThan(0);
+    expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("(20,00 €)").length).toBeGreaterThan(0);
+
+    rerender(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          currentBalanceCents: 100_00,
+          month: "2026-10",
+          occurrences: [],
+        })}
+        editable
+      />,
+    );
+
+    expect(screen.queryByLabelText("Excluir Teste da previsão deste mês")).toBeNull();
+    expect(within(screen.getByRole("row", { name: /Débitos directos/ })).getAllByText("–").length).toBeGreaterThan(0);
+    expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("100,00 €").length).toBeGreaterThan(0);
+  });
+
+  it("keeps the latest checkbox state when changes resolve out of order", async () => {
+    const resolvers: Array<(value: { ok: true; state: { recurringRuleId: string; month: string; excludedFromForecast: boolean } }) => void> = [];
+    const setDirectDebitExcludedAction = vi.fn(
+      () =>
+        new Promise<{ ok: true; state: { recurringRuleId: string; month: string; excludedFromForecast: boolean } }>(
+          (resolve) => {
+            resolvers.push(resolve);
+          },
+        ),
+    );
+
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({ occurrences: [directDebitOccurrences[0]] })}
+        editable
+        setDirectDebitExcludedAction={setDirectDebitExcludedAction}
+      />,
+    );
+
+    const checkbox = screen.getByLabelText("Excluir Electricidade da previsão deste mês");
+    fireEvent.click(checkbox);
+    fireEvent.click(checkbox);
+
+    expectCheckboxChecked(checkbox, false);
+
+    resolvers[1]?.({
+      ok: true,
+      state: { recurringRuleId: "electricity", month: "2026-07", excludedFromForecast: false },
+    });
+    await waitFor(() => expect(screen.getByText("Guardado")).toBeTruthy());
+
+    resolvers[0]?.({
+      ok: true,
+      state: { recurringRuleId: "electricity", month: "2026-07", excludedFromForecast: true },
+    });
+
+    expectCheckboxChecked(checkbox, false);
+  });
+
+  it("reverts the checkbox and avoids false success on save error", async () => {
+    const setDirectDebitExcludedAction = vi.fn(async () => ({
+      ok: false as const,
+      error: "Falhou",
+    }));
+
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({ occurrences: [directDebitOccurrences[0]] })}
+        editable
+        setDirectDebitExcludedAction={setDirectDebitExcludedAction}
+      />,
+    );
+
+    const checkbox = screen.getByLabelText("Excluir Electricidade da previsão deste mês");
+    fireEvent.click(checkbox);
+
+    await waitFor(() => expect(screen.getByText("Erro ao guardar")).toBeTruthy());
+    expect(screen.getByText("Falhou")).toBeTruthy();
+    expectCheckboxChecked(checkbox, false);
   });
 
   it("removes the global save button and the custom line type selector", () => {

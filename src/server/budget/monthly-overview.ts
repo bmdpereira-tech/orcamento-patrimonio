@@ -2,12 +2,18 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
+  getAccountDisplayName,
   getActiveInvestmentAssets,
   getBudgetVisibleLiquidityAccounts,
   type InvestmentAsset,
 } from "@/domain/budget/accounts";
 import { assertCents, type Cents } from "@/domain/budget/money";
 import { FIRST_MONTH, toMonthStartDate, type MonthId } from "@/domain/budget/months";
+import {
+  buildMonthlyDirectDebitOccurrences,
+  buildRecurringDebitSourceAmountMap,
+  monthRangeUntil,
+} from "@/domain/budget/recurring-rules";
 import {
   buildSnapshotsForMonth,
   monthlySourceAmountKey,
@@ -16,6 +22,7 @@ import {
 } from "@/domain/budget/monthly-snapshots";
 import {
   buildBudgetOverview,
+  EDITABLE_BUDGET_ROW_KEYS,
   type BudgetOverview,
   type BudgetRowKey,
   type EditableBudgetRowKey,
@@ -23,6 +30,7 @@ import {
 } from "@/domain/budget/monthly-view";
 import { createSupabaseAdminClient } from "@/server/supabase/client";
 import { listManagedAccounts } from "./accounts";
+import { listRecurringRuleMonthStatesUntil, listRecurringRules } from "./recurring-rules";
 
 type AccountMonthStateRow = {
   account_id: string;
@@ -67,7 +75,7 @@ export type SystemBudgetSourceType =
   | "salary";
 
 export type SystemBudgetDefinition = {
-  rowKey: EditableBudgetRowKey;
+  rowKey: BudgetRowKey;
   sourceType: SystemBudgetSourceType;
   description: string;
   category: "expense" | "income" | "transfer" | "credit_card_payment" | "investment" | "other";
@@ -115,11 +123,13 @@ export const SYSTEM_BUDGET_DEFINITIONS: readonly SystemBudgetDefinition[] = [
 const SYSTEM_SOURCE_TYPES = SYSTEM_BUDGET_DEFINITIONS.map((definition) => definition.sourceType);
 
 export function isSystemEditableRowKey(rowKey: BudgetRowKey): rowKey is EditableBudgetRowKey {
-  return (
-    rowKey === "initial-balance" ||
-    rowKey === "current-balance" ||
-    SYSTEM_BUDGET_DEFINITIONS.some((definition) => definition.rowKey === rowKey)
-  );
+  return EDITABLE_BUDGET_ROW_KEYS.some((editableRowKey) => editableRowKey === rowKey);
+}
+
+function isPersistedSystemBudgetDefinition(
+  definition: SystemBudgetDefinition,
+): definition is SystemBudgetDefinition & { rowKey: EditableBudgetRowKey } {
+  return EDITABLE_BUDGET_ROW_KEYS.some((rowKey) => rowKey === definition.rowKey);
 }
 
 function isMonthlySystemSourceType(sourceType: string): sourceType is MonthlySystemSourceType {
@@ -226,7 +236,7 @@ function buildSourceAmountMap(items: readonly BudgetItemRow[], allocations: read
   for (const allocation of allocations) {
     const item = itemById.get(allocation.budget_item_id);
 
-    if (!item || !isMonthlySystemSourceType(item.source_type)) {
+    if (!item || !isMonthlySystemSourceType(item.source_type) || item.source_type === "direct_debits") {
       continue;
     }
 
@@ -269,19 +279,52 @@ function buildCustomBudgetItems(items: readonly BudgetItemRow[], allocations: re
 
 export async function getSupabaseBudgetOverview(month: MonthId): Promise<BudgetOverview> {
   const client = createSupabaseAdminClient();
-  const [accounts, states, budgetData, investmentAssets] = await Promise.all([
+  const [accounts, states, budgetData, investmentAssets, recurringRules, recurringRuleMonthStates] = await Promise.all([
     listManagedAccounts(client),
     fetchAccountMonthStates(client, month),
     fetchBudgetItems(client, month),
     fetchInvestmentAssets(client, month),
+    listRecurringRules(client),
+    listRecurringRuleMonthStatesUntil(month, client),
   ]);
   const activeAccounts = getBudgetVisibleLiquidityAccounts(accounts, month);
   const sourceAmounts = buildSourceAmountMap(budgetData.items, budgetData.allocations);
+  const recurringDebitAmounts = buildRecurringDebitSourceAmountMap(
+    recurringRules,
+    monthRangeUntil(month),
+    recurringRuleMonthStates,
+  );
+
+  for (const [key, amountCents] of recurringDebitAmounts) {
+    sourceAmounts.set(key, amountCents);
+  }
+
+  const accountsById = new Map(accounts.map((account) => [account.id, account]));
+  const directDebitOccurrences = buildMonthlyDirectDebitOccurrences(
+    recurringRules,
+    month,
+    recurringRuleMonthStates,
+  ).map((occurrence) => {
+    const account = accountsById.get(occurrence.accountId);
+
+    return {
+      ...occurrence,
+      accountName: account ? getAccountDisplayName(account) : "Conta arquivada",
+      accountSortOrder: account?.sortOrder ?? Number.MAX_SAFE_INTEGER,
+    };
+  });
   const customItems = buildCustomBudgetItems(budgetData.items, budgetData.allocations);
   const snapshots = buildSnapshotsForMonth({ month, accounts, states, sourceAmounts, customItems });
   const selectedCustomItems = customItems.filter((item) => item.month === month);
 
-  return buildBudgetOverview({ month, accounts: activeAccounts, investmentAssets, snapshots, customItems: selectedCustomItems });
+  return buildBudgetOverview({
+    month,
+    accounts: activeAccounts,
+    investmentAssets,
+    snapshots,
+    customItems: selectedCustomItems,
+    directDebitOccurrences,
+  });
 }
 
 async function ensureSystemBudgetItem(
@@ -385,7 +428,7 @@ export async function saveMonthlyBudgetValues({
     }
   }
 
-  for (const definition of SYSTEM_BUDGET_DEFINITIONS) {
+  for (const definition of SYSTEM_BUDGET_DEFINITIONS.filter(isPersistedSystemBudgetDefinition)) {
     const budgetItemId = await ensureSystemBudgetItem(client, month, definition);
     const allocations = accountIds.map((accountId) => ({
       budget_item_id: budgetItemId,

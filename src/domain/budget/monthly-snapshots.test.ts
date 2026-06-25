@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LiquidityAccount } from "./accounts";
-import { buildSnapshotsForMonth, calculateRealisedMovements } from "./monthly-snapshots";
+import { buildSnapshotsForMonth, calculateRealisedMovements, monthlySourceAmountKey } from "./monthly-snapshots";
 import type { MonthlyCustomBudgetItem } from "./monthly-view";
 
 const accounts: LiquidityAccount[] = [
@@ -84,6 +84,25 @@ describe("monthly snapshots", () => {
 
     expect(snapshot?.manualForecastsCents).toBe(-15_00);
     expect(snapshot?.finalBalanceCents).toBe(70_00);
+  });
+
+  it("includes automatic direct debit source amounts in the final balance", () => {
+    const [snapshot] = buildSnapshotsForMonth({
+      month: "2026-07",
+      accounts,
+      states: [
+        {
+          accountId: "account-a",
+          month: "2026-07",
+          initialBalanceOverrideCents: 100_00,
+          currentBalanceOverrideCents: 100_00,
+        },
+      ],
+      sourceAmounts: new Map([[monthlySourceAmountKey("2026-07", "direct_debits", "account-a"), -45_00]]),
+    });
+
+    expect(snapshot?.directDebitsCents).toBe(-45_00);
+    expect(snapshot?.finalBalanceCents).toBe(55_00);
   });
 
   it("keeps custom forecast lines isolated by month", () => {
