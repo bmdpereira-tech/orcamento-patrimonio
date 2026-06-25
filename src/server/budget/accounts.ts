@@ -186,6 +186,7 @@ export async function accountHasDependencies(id: string) {
     countRows(client, "salary_versions", "account_id", id),
     countRows(client, "salary_month_overrides", "account_id", id),
     countRows(client, "credit_card_statement_overrides", "credit_card_account_id", id),
+    countRows(client, "actual_movements", "account_id", id),
   ]);
 
   return checks.some((count) => count > 0);

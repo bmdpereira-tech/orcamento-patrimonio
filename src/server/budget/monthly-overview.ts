@@ -6,29 +6,35 @@ import {
   getBudgetVisibleLiquidityAccounts,
   type InvestmentAsset,
 } from "@/domain/budget/accounts";
-import { assertCents, sumCents, type Cents } from "@/domain/budget/money";
-import { addMonths, FIRST_MONTH, toMonthStartDate, type MonthId } from "@/domain/budget/months";
+import { buildActualMovementAmountMap } from "@/domain/budget/actual-movements";
+import { assertCents, type Cents } from "@/domain/budget/money";
+import { FIRST_MONTH, toMonthStartDate, type MonthId } from "@/domain/budget/months";
+import {
+  buildSnapshotsForMonth,
+  monthlySourceAmountKey,
+  type AccountMonthState,
+  type MonthlySystemSourceType,
+} from "@/domain/budget/monthly-snapshots";
 import {
   buildBudgetOverview,
   type BudgetOverview,
   type BudgetRowKey,
   type EditableBudgetRowKey,
-  type MonthlyAccountSnapshot,
 } from "@/domain/budget/monthly-view";
 import { createSupabaseAdminClient } from "@/server/supabase/client";
-import { listManagedAccounts, type ManagedAccount } from "./accounts";
+import { listActualMovementsUntilMonth } from "./actual-movements";
+import { listManagedAccounts } from "./accounts";
 
 type AccountMonthStateRow = {
   account_id: string;
   month: string;
   initial_balance_override_cents: number | null;
-  current_balance_override_cents: number | null;
 };
 
 type BudgetItemRow = {
   id: string;
   month: string;
-  source_type: string;
+  source_type: MonthlySystemSourceType;
 };
 
 type BudgetAllocationRow = {
@@ -52,7 +58,6 @@ type InvestmentMonthValueRow = {
 };
 
 export type SystemBudgetSourceType =
-  | "realised_movements"
   | "direct_debits"
   | "day_to_day"
   | "credit_card_payments"
@@ -67,13 +72,6 @@ export type SystemBudgetDefinition = {
 };
 
 export const SYSTEM_BUDGET_DEFINITIONS: readonly SystemBudgetDefinition[] = [
-  {
-    rowKey: "realised-movements",
-    sourceType: "realised_movements",
-    description: "Movimentos realizados",
-    category: "other",
-    status: "done",
-  },
   {
     rowKey: "direct-debits",
     sourceType: "direct_debits",
@@ -109,35 +107,14 @@ const SYSTEM_SOURCE_TYPES = SYSTEM_BUDGET_DEFINITIONS.map((definition) => defini
 export function isSystemEditableRowKey(rowKey: BudgetRowKey): rowKey is EditableBudgetRowKey {
   return (
     rowKey === "initial-balance" ||
-    rowKey === "current-balance" ||
     SYSTEM_BUDGET_DEFINITIONS.some((definition) => definition.rowKey === rowKey)
   );
-}
-
-function monthRangeUntil(month: MonthId) {
-  const months: MonthId[] = [];
-  let cursor = FIRST_MONTH as MonthId;
-
-  while (cursor <= month) {
-    months.push(cursor);
-    cursor = addMonths(cursor, 1);
-  }
-
-  return months;
-}
-
-function stateKey(month: MonthId, accountId: string) {
-  return `${month}:${accountId}`;
-}
-
-function sourceKey(month: MonthId, sourceType: string, accountId: string) {
-  return `${month}:${sourceType}:${accountId}`;
 }
 
 async function fetchAccountMonthStates(client: SupabaseClient, month: MonthId) {
   const { data, error } = await client
     .from("account_month_states")
-    .select("account_id,month,initial_balance_override_cents,current_balance_override_cents")
+    .select("account_id,month,initial_balance_override_cents")
     .gte("month", toMonthStartDate(FIRST_MONTH as MonthId))
     .lte("month", toMonthStartDate(month));
 
@@ -145,7 +122,14 @@ async function fetchAccountMonthStates(client: SupabaseClient, month: MonthId) {
     throw new Error(`Não foi possível carregar os saldos mensais: ${error.message}`);
   }
 
-  return (data ?? []) as AccountMonthStateRow[];
+  return ((data ?? []) as AccountMonthStateRow[]).map(
+    (state): AccountMonthState => ({
+      accountId: state.account_id,
+      month: state.month.slice(0, 7) as MonthId,
+      initialBalanceOverrideCents:
+        state.initial_balance_override_cents === null ? null : assertCents(state.initial_balance_override_cents),
+    }),
+  );
 }
 
 async function fetchSystemBudgetItems(client: SupabaseClient, month: MonthId) {
@@ -231,124 +215,26 @@ function buildSourceAmountMap(items: readonly BudgetItemRow[], allocations: read
     }
 
     const month = item.month.slice(0, 7) as MonthId;
-    const key = sourceKey(month, item.source_type, allocation.account_id);
+    const key = monthlySourceAmountKey(month, item.source_type, allocation.account_id);
     amountBySource.set(key, assertCents(allocation.amount_cents));
   }
 
   return amountBySource;
 }
 
-function buildStateMap(states: readonly AccountMonthStateRow[]) {
-  return new Map(
-    states.map((state) => [
-      stateKey(state.month.slice(0, 7) as MonthId, state.account_id),
-      {
-        initialBalanceOverrideCents:
-          state.initial_balance_override_cents === null ? null : assertCents(state.initial_balance_override_cents),
-        currentBalanceOverrideCents:
-          state.current_balance_override_cents === null ? null : assertCents(state.current_balance_override_cents),
-      },
-    ]),
-  );
-}
-
-function getSourceAmount(
-  sourceAmounts: ReadonlyMap<string, Cents>,
-  month: MonthId,
-  sourceType: SystemBudgetSourceType,
-  accountId: string,
-) {
-  return sourceAmounts.get(sourceKey(month, sourceType, accountId)) ?? 0;
-}
-
-export function buildSnapshotsForMonth({
-  month,
-  accounts,
-  states,
-  sourceAmounts,
-}: {
-  month: MonthId;
-  accounts: readonly ManagedAccount[];
-  states: readonly AccountMonthStateRow[];
-  sourceAmounts: ReadonlyMap<string, Cents>;
-}) {
-  const stateByMonthAccount = buildStateMap(states);
-  const previousFinalByAccount = new Map<string, Cents>();
-  let snapshotsForSelectedMonth: MonthlyAccountSnapshot[] = [];
-
-  for (const currentMonth of monthRangeUntil(month)) {
-    const activeAccounts = getBudgetVisibleLiquidityAccounts(accounts, currentMonth);
-    const snapshotsForCurrentMonth = activeAccounts.map((account) => {
-      const state = stateByMonthAccount.get(stateKey(currentMonth, account.id));
-      const initialBalanceCents =
-        currentMonth === FIRST_MONTH
-          ? state?.initialBalanceOverrideCents ?? 0
-          : previousFinalByAccount.get(account.id) ?? 0;
-      const realisedMovementsCents = getSourceAmount(
-        sourceAmounts,
-        currentMonth,
-        "realised_movements",
-        account.id,
-      );
-      const currentBalanceCents =
-        state?.currentBalanceOverrideCents ?? sumCents([initialBalanceCents, realisedMovementsCents]);
-      const directDebitsCents = getSourceAmount(sourceAmounts, currentMonth, "direct_debits", account.id);
-      const dayToDayCents = getSourceAmount(sourceAmounts, currentMonth, "day_to_day", account.id);
-      const creditCardPaymentsCents = getSourceAmount(
-        sourceAmounts,
-        currentMonth,
-        "credit_card_payments",
-        account.id,
-      );
-      const manualForecastsCents = 0;
-      const subtotalBeforeSalaryCents = sumCents([
-        currentBalanceCents,
-        directDebitsCents,
-        dayToDayCents,
-        creditCardPaymentsCents,
-        manualForecastsCents,
-      ]);
-      const salaryCents = getSourceAmount(sourceAmounts, currentMonth, "salary", account.id);
-      const finalBalanceCents = sumCents([subtotalBeforeSalaryCents, salaryCents]);
-
-      return {
-        accountId: account.id,
-        initialBalanceCents,
-        realisedMovementsCents,
-        currentBalanceCents,
-        directDebitsCents,
-        dayToDayCents,
-        creditCardPaymentsCents,
-        manualForecastsCents,
-        subtotalBeforeSalaryCents,
-        salaryCents,
-        finalBalanceCents,
-      };
-    });
-
-    for (const snapshot of snapshotsForCurrentMonth) {
-      previousFinalByAccount.set(snapshot.accountId, snapshot.finalBalanceCents);
-    }
-
-    if (currentMonth === month) {
-      snapshotsForSelectedMonth = snapshotsForCurrentMonth;
-    }
-  }
-
-  return snapshotsForSelectedMonth;
-}
-
 export async function getSupabaseBudgetOverview(month: MonthId): Promise<BudgetOverview> {
   const client = createSupabaseAdminClient();
-  const [accounts, states, systemBudgetData, investmentAssets] = await Promise.all([
+  const [accounts, states, systemBudgetData, investmentAssets, actualMovements] = await Promise.all([
     listManagedAccounts(client),
     fetchAccountMonthStates(client, month),
     fetchSystemBudgetItems(client, month),
     fetchInvestmentAssets(client, month),
+    listActualMovementsUntilMonth(month, client),
   ]);
   const activeAccounts = getBudgetVisibleLiquidityAccounts(accounts, month);
   const sourceAmounts = buildSourceAmountMap(systemBudgetData.items, systemBudgetData.allocations);
-  const snapshots = buildSnapshotsForMonth({ month, accounts, states, sourceAmounts });
+  const actualMovementAmounts = buildActualMovementAmountMap(actualMovements);
+  const snapshots = buildSnapshotsForMonth({ month, accounts, states, sourceAmounts, actualMovementAmounts });
 
   return buildBudgetOverview({ month, accounts: activeAccounts, investmentAssets, snapshots });
 }
@@ -421,32 +307,29 @@ export async function saveMonthlyBudgetValues({
   const accountIds = activeAccounts.map((account) => account.id);
   const monthDate = toMonthStartDate(month);
 
-  const accountStateRows = accountIds.map((accountId) => {
-    const row: {
-      account_id: string;
-      month: string;
-      current_balance_override_cents: Cents;
-      initial_balance_override_cents?: Cents;
-    } = {
-      account_id: accountId,
-      month: monthDate,
-      current_balance_override_cents: values["current-balance"]?.[accountId] ?? 0,
-    };
+  if (month === FIRST_MONTH) {
+    const accountStateRows = accountIds.map((accountId) => {
+      const row: {
+        account_id: string;
+        month: string;
+        initial_balance_override_cents: Cents;
+      } = {
+        account_id: accountId,
+        month: monthDate,
+        initial_balance_override_cents: values["initial-balance"]?.[accountId] ?? 0,
+      };
 
-    if (month === FIRST_MONTH) {
-      row.initial_balance_override_cents = values["initial-balance"]?.[accountId] ?? 0;
-    }
-
-    return row;
-  });
-
-  if (accountStateRows.length > 0) {
-    const { error } = await client.from("account_month_states").upsert(accountStateRows, {
-      onConflict: "account_id,month",
+      return row;
     });
 
-    if (error) {
-      throw new Error(`Não foi possível guardar os saldos mensais: ${error.message}`);
+    if (accountStateRows.length > 0) {
+      const { error } = await client.from("account_month_states").upsert(accountStateRows, {
+        onConflict: "account_id,month",
+      });
+
+      if (error) {
+        throw new Error(`Não foi possível guardar os saldos mensais: ${error.message}`);
+      }
     }
   }
 

@@ -136,6 +136,22 @@ As seguintes migrations foram criadas e aplicadas ao Supabase:
 20260701002000_phase2_accounts_and_budget_lines.sql
 ```
 
+A seguinte migration incremental foi criada no repositório em 25/06/2026 e deve ser aplicada ao Supabase antes de usar a tab Histórico em produção/local remoto:
+
+```text
+20260701003000_actual_movements.sql
+```
+
+Esta migration cria:
+
+- tipo `actual_movement_type` com `income` e `expense`;
+- tabela `actual_movements`;
+- foreign key para `accounts`;
+- montantes em cêntimos inteiros positivos;
+- índices por conta/data e por data;
+- trigger `updated_at`;
+- RLS activa com policy `no_client_access`.
+
 Novas migrations devem:
 
 - ter timestamp posterior a `20260701002000`;
@@ -159,13 +175,17 @@ O seed inicial está em:
 scripts/seed.ts
 ```
 
-O comando que funcionou localmente foi:
+O comando funcional é:
 
 ```powershell
-npx.cmd tsx --env-file=.env.local scripts/seed.ts
+npm.cmd run db:seed
 ```
 
-O script `npm run db:seed` não carregava automaticamente o `.env.local` no momento da última validação.
+O script `db:seed` foi actualizado para carregar explicitamente `.env.local` através de:
+
+```text
+tsx --env-file=.env.local scripts/seed.ts
+```
 
 Antes de alterar ou repetir o seed:
 
@@ -199,11 +219,30 @@ Foi implementada uma primeira fatia funcional da Fase 2:
 - tab Contas com criar, editar, arquivar, reactivar e eliminar quando permitido;
 - contas com nome, nome curto, tipo, ordem, visibilidade e inclusão em Património líquido;
 - tabela mensal carregada do Supabase;
-- algumas células editáveis;
+- células manuais editáveis;
 - persistência em estruturas como `account_month_states`, `budget_items` e `budget_allocations`;
 - cálculo de Net Assets limitado às contas marcadas para inclusão;
 - preservação geral do layout aprovado;
 - `T212 Cash` mantido como nome curto.
+
+Em 25/06/2026 foi concluído o primeiro bloco funcional da Fase 2: **Movimentos reais e saldos automáticos**.
+
+Implementado:
+
+- migration incremental `20260701003000_actual_movements.sql`;
+- domínio `src/domain/budget/actual-movements.ts`;
+- cálculo mensal centralizado em `src/domain/budget/monthly-snapshots.ts`;
+- serviço Supabase `src/server/budget/actual-movements.ts`;
+- Server Actions de Histórico em `src/app/(app)/historico/actions.ts`;
+- componente funcional `src/components/actual-movements-management.tsx`;
+- tab Histórico com listar, filtrar por mês, filtrar por conta, criar, editar e eliminar movimentos;
+- Orçamento passa a calcular “Movimentos realizados” a partir de `actual_movements`;
+- “Saldo actual” passa a ser sempre `Saldo inicial + Movimentos realizados`;
+- `current_balance_override_cents` fica preservado na base de dados, mas deixa de ser usado nos cálculos;
+- “Movimentos realizados” e “Saldo actual” deixam de ser editáveis na tabela mensal;
+- eliminação de contas passa a considerar `actual_movements` como dependência;
+- zeros monetários válidos passam a aparecer como `0,00 €`;
+- `vitest.config.ts` passou a resolver o alias `@` e JSX automático para testes de componentes.
 
 Validações técnicas reportadas pelo Codex:
 
@@ -220,16 +259,13 @@ A Fase 2 não está concluída.
 
 Problemas confirmados:
 
-- “Movimentos realizados” aparece editável, mas deve ser automático;
-- os cálculos verticais por conta não estão concluídos;
+- os cálculos verticais por conta ainda não estão totalmente concluídos para previsões futuras;
 - os totais horizontais funcionam apenas parcialmente;
 - “Débitos directos” deve ser automático;
 - “Day to day” ainda não calcula o plafond diário;
 - não é possível adicionar linhas personalizadas;
-- linhas calculadas ainda aparecem como inputs;
-- algumas linhas mostram `—` quando deveriam mostrar `0,00 €`;
+- algumas linhas calculadas futuras ainda poderão aparecer como inputs até serem automatizadas;
 - o espaçamento vertical da tabela continua excessivo;
-- a tab Histórico ainda precisa de ser validada ou concluída;
 - a tab Débitos directos ainda precisa de ser validada ou concluída;
 - a tab Configurações ainda precisa de suportar o plafond diário e a conta associada;
 - a tab Investimentos ainda não está implementada funcionalmente.
@@ -672,10 +708,10 @@ npm.cmd run build
 
 Testes mínimos da Fase 2:
 
-- movimentos realizados automáticos;
-- entradas e saídas com sinal correcto;
-- saldo actual;
-- saldo inicial transportado;
+- movimentos realizados automáticos; **coberto para movimentos reais**
+- entradas e saídas com sinal correcto; **coberto**
+- saldo actual; **coberto para movimentos reais**
+- saldo inicial transportado; **coberto**
 - débitos directos;
 - Day to day para mês passado, actual e futuro;
 - conta correcta para Day to day;
@@ -685,10 +721,10 @@ Testes mínimos da Fase 2:
 - saldo final;
 - totais horizontais;
 - cartões coerentes;
-- valores zero;
+- valores zero; **coberto**
 - persistência;
 - recálculo após refresh;
-- linhas calculadas não editáveis;
+- linhas calculadas não editáveis; **coberto para Movimentos realizados e Saldo actual**
 - tabela compacta.
 
 ## 19. Comandos úteis
@@ -717,7 +753,7 @@ npx.cmd supabase db push
 ### Seed
 
 ```powershell
-npx.cmd tsx --env-file=.env.local scripts/seed.ts
+npm.cmd run db:seed
 ```
 
 ### Git
@@ -737,21 +773,21 @@ Antes de alterar qualquer ficheiro, lê integralmente PROJECT_CONTEXT.md e inspe
 
 ## 21. Próximo passo recomendado
 
-O próximo trabalho deve ser exclusivamente concluir a Fase 2:
+O próximo trabalho deve continuar exclusivamente na Fase 2:
 
-1. tornar Movimentos realizados automático;
-2. concluir a tab Histórico;
+1. aplicar no Supabase a migration `20260701003000_actual_movements.sql`;
+2. validar a tab Histórico contra o Supabase remoto/local real;
 3. tornar Débitos directos automático;
 4. concluir a tab Débitos directos;
 5. implementar o plafond Day to day de €50;
 6. configurar a conta de Day to day;
 7. adicionar linhas personalizadas;
-8. corrigir cálculos verticais;
-9. corrigir totais horizontais;
-10. tornar linhas calculadas não editáveis;
+8. corrigir cálculos verticais das previsões;
+9. corrigir totais horizontais restantes;
+10. tornar futuras linhas calculadas não editáveis;
 11. compactar a tabela;
-12. actualizar cartões;
-13. criar testes;
+12. actualizar cartões restantes;
+13. criar testes adicionais para as restantes regras;
 14. aplicar migrations necessárias;
 15. actualizar este ficheiro;
 16. criar commit Git.

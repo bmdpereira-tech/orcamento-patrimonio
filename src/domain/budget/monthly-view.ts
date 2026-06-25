@@ -37,7 +37,12 @@ export type BudgetRowKey =
 
 export type BudgetRowTone = "regular" | "section-end" | "subtotal" | "salary" | "final";
 
-export type EditableBudgetRowKey = Exclude<BudgetRowKey, "subtotal-before-salary" | "final-balance">;
+export type EditableBudgetRowKey =
+  | "initial-balance"
+  | "direct-debits"
+  | "day-to-day"
+  | "credit-card-payments"
+  | "salary";
 
 export type BudgetTableRow = {
   key: BudgetRowKey;
@@ -145,8 +150,6 @@ const rowDefinitions: readonly {
 
 export const EDITABLE_BUDGET_ROW_KEYS: readonly EditableBudgetRowKey[] = [
   "initial-balance",
-  "realised-movements",
-  "current-balance",
   "direct-debits",
   "day-to-day",
   "credit-card-payments",

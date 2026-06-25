@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { assertCents, formatEditableEuroCents, formatEuroCents, parseEuroCents, sumCents } from "./money";
 
 describe("money helpers", () => {
-  it("formats zero as an en dash", () => {
-    expect(formatEuroCents(0)).toBe("–");
+  it("formats zero as a valid euro amount", () => {
+    expect(formatEuroCents(0)).toBe("0,00 €");
   });
 
   it("formats positive euros for Portugal", () => {

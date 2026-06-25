@@ -1,3 +1,5 @@
+import { APP_CURRENCY, APP_LOCALE } from "./constants";
+
 export type Cents = number;
 
 export function assertCents(amountCents: number): Cents {
@@ -15,15 +17,16 @@ export function sumCents(amounts: readonly Cents[]) {
 export function formatEuroCents(amountCents: Cents) {
   assertCents(amountCents);
 
-  if (amountCents === 0) {
-    return "–";
-  }
-
   const absoluteValue = Math.abs(amountCents);
-  const euros = Math.trunc(absoluteValue / 100);
-  const cents = String(absoluteValue % 100).padStart(2, "0");
-  const groupedEuros = String(euros).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-  const formatted = `${groupedEuros},${cents} €`;
+  const formatted = new Intl.NumberFormat(APP_LOCALE, {
+    style: "currency",
+    currency: APP_CURRENCY,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+    useGrouping: "always",
+  } as unknown as Intl.NumberFormatOptions)
+    .format(absoluteValue / 100)
+    .replace(/\u00a0/g, " ");
 
   return amountCents < 0 ? `(${formatted})` : formatted;
 }
