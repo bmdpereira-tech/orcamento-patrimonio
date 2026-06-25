@@ -50,21 +50,19 @@ describe("monthly snapshots", () => {
     expect(snapshot?.finalBalanceCents).toBe(85_00);
   });
 
-  it("includes expense and income custom forecasts in the final balance", () => {
+  it("includes signed custom forecasts in the final balance", () => {
     const customItems: MonthlyCustomBudgetItem[] = [
       {
         id: "trip",
         month: "2026-07",
         description: "Viagem",
-        category: "expense",
         sortOrder: 10,
-        valuesByAccountId: { "account-a": 40_00 },
+        valuesByAccountId: { "account-a": -40_00 },
       },
       {
         id: "refund",
         month: "2026-07",
         description: "Reembolso",
-        category: "income",
         sortOrder: 20,
         valuesByAccountId: { "account-a": 25_00 },
       },
@@ -94,17 +92,15 @@ describe("monthly snapshots", () => {
         id: "july",
         month: "2026-07",
         description: "Julho",
-        category: "expense",
         sortOrder: 10,
-        valuesByAccountId: { "account-a": 40_00 },
+        valuesByAccountId: { "account-a": -40_00 },
       },
       {
         id: "august",
         month: "2026-08",
         description: "Agosto",
-        category: "expense",
         sortOrder: 20,
-        valuesByAccountId: { "account-a": 10_00 },
+        valuesByAccountId: { "account-a": -10_00 },
       },
     ];
     const [snapshot] = buildSnapshotsForMonth({

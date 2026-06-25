@@ -18,7 +18,6 @@ import {
   buildBudgetOverview,
   type BudgetOverview,
   type BudgetRowKey,
-  type CustomBudgetItemCategory,
   type EditableBudgetRowKey,
   type MonthlyCustomBudgetItem,
 } from "@/domain/budget/monthly-view";
@@ -78,7 +77,6 @@ export type SystemBudgetDefinition = {
 export type CustomBudgetItemSaveInput = {
   id: string;
   description: string;
-  category: CustomBudgetItemCategory;
   sortOrder: number;
   valuesByAccountId: Record<string, Cents>;
 };
@@ -126,10 +124,6 @@ export function isSystemEditableRowKey(rowKey: BudgetRowKey): rowKey is Editable
 
 function isMonthlySystemSourceType(sourceType: string): sourceType is MonthlySystemSourceType {
   return SYSTEM_SOURCE_TYPES.some((systemSourceType) => systemSourceType === sourceType);
-}
-
-function isCustomBudgetItemCategory(category: string): category is CustomBudgetItemCategory {
-  return category === "expense" || category === "income";
 }
 
 async function fetchAccountMonthStates(client: SupabaseClient, month: MonthId) {
@@ -254,12 +248,12 @@ function buildCustomBudgetItems(items: readonly BudgetItemRow[], allocations: re
   }
 
   return items
-    .filter((item) => item.source_type === "manual" && isCustomBudgetItemCategory(item.category))
+    .filter((item) => item.source_type === "manual")
     .map((item): MonthlyCustomBudgetItem => {
       const valuesByAccountId = Object.fromEntries(
         (allocationsByItemId.get(item.id) ?? []).map((allocation) => [
           allocation.account_id,
-          assertCents(Math.abs(allocation.amount_cents)),
+          assertCents(allocation.amount_cents),
         ]),
       );
 
@@ -267,7 +261,6 @@ function buildCustomBudgetItems(items: readonly BudgetItemRow[], allocations: re
         id: item.id,
         month: item.month.slice(0, 7) as MonthId,
         description: item.description,
-        category: item.category as CustomBudgetItemCategory,
         sortOrder: item.sort_order ?? 0,
         valuesByAccountId,
       };
@@ -418,7 +411,6 @@ export async function saveMonthlyBudgetValues({
       .from("budget_items")
       .update({
         description: item.description,
-        category: item.category,
         sort_order: item.sortOrder,
       })
       .eq("id", item.id)
@@ -432,7 +424,7 @@ export async function saveMonthlyBudgetValues({
     const allocations = accountIds.map((accountId) => ({
       budget_item_id: item.id,
       account_id: accountId,
-      amount_cents: Math.abs(item.valuesByAccountId[accountId] ?? 0),
+      amount_cents: item.valuesByAccountId[accountId] ?? 0,
     }));
 
     if (allocations.length === 0) {
@@ -449,7 +441,7 @@ export async function saveMonthlyBudgetValues({
   }
 }
 
-export async function addCustomBudgetItem(month: MonthId) {
+export async function addCustomBudgetItem(month: MonthId): Promise<MonthlyCustomBudgetItem> {
   const client = createSupabaseAdminClient();
   const monthDate = toMonthStartDate(month);
   const { data: existingItems, error: selectError } = await client
@@ -465,18 +457,32 @@ export async function addCustomBudgetItem(month: MonthId) {
   }
 
   const maxSortOrder = (existingItems?.[0] as { sort_order: number | null } | undefined)?.sort_order ?? 0;
-  const { error } = await client.from("budget_items").insert({
-    month: monthDate,
-    description: "Nova linha",
-    category: "expense",
-    status: "planned",
-    source_type: "manual",
-    sort_order: maxSortOrder + 10,
-  });
+  const { data: inserted, error } = await client
+    .from("budget_items")
+    .insert({
+      month: monthDate,
+      description: "Nova linha",
+      category: "other",
+      status: "planned",
+      source_type: "manual",
+      sort_order: maxSortOrder + 10,
+    })
+    .select("id,month,description,sort_order")
+    .single();
 
   if (error) {
     throw new Error(`Não foi possível adicionar a linha: ${error.message}`);
   }
+
+  const item = inserted as Pick<BudgetItemRow, "id" | "month" | "description" | "sort_order">;
+
+  return {
+    id: item.id,
+    month: item.month.slice(0, 7) as MonthId,
+    description: item.description,
+    sortOrder: item.sort_order ?? maxSortOrder + 10,
+    valuesByAccountId: {},
+  };
 }
 
 export async function deleteCustomBudgetItem(month: MonthId, id: string) {

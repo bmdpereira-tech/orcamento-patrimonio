@@ -1,13 +1,12 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
 import { parseEuroCents, type Cents } from "@/domain/budget/money";
 import { normaliseMonth } from "@/domain/budget/months";
 import {
   EDITABLE_BUDGET_ROW_KEYS,
-  type CustomBudgetItemCategory,
   type EditableBudgetRowKey,
+  type MonthlyCustomBudgetItem,
 } from "@/domain/budget/monthly-view";
 import {
   addCustomBudgetItem,
@@ -16,49 +15,41 @@ import {
   type CustomBudgetItemSaveInput,
 } from "@/server/budget/monthly-overview";
 
-function redirectToBudget(month: string, params: Record<string, string>) {
-  const searchParams = new URLSearchParams({ month, ...params });
-  redirect(`/orcamento?${searchParams.toString()}`);
-}
-
-function isCustomBudgetItemCategory(value: string): value is CustomBudgetItemCategory {
-  return value === "expense" || value === "income";
-}
+type BudgetActionResult = { ok: true } | { ok: false; error: string };
+type AddCustomBudgetItemActionResult = { ok: true; item: MonthlyCustomBudgetItem } | { ok: false; error: string };
 
 function parseCustomItems(formData: FormData, accountIds: readonly string[]) {
-  return formData
-    .getAll("customItemId")
-    .map((value) => String(value).trim())
-    .filter(Boolean)
-    .map((id): CustomBudgetItemSaveInput => {
-      const category = String(formData.get(`custom:${id}:category`) ?? "");
+  const itemIds = [
+    ...new Set(
+      formData
+        .getAll("customItemId")
+        .map((value) => String(value).trim())
+        .filter(Boolean),
+    ),
+  ];
 
-      if (!isCustomBudgetItemCategory(category)) {
-        throw new Error("Escolhe um tipo válido para cada linha personalizada.");
-      }
+  return itemIds.map((id): CustomBudgetItemSaveInput => {
+    const sortOrder = Number(String(formData.get(`custom:${id}:sortOrder`) ?? "0"));
 
-      const sortOrder = Number(String(formData.get(`custom:${id}:sortOrder`) ?? "0"));
+    if (!Number.isInteger(sortOrder)) {
+      throw new Error("A ordem das linhas personalizadas deve ser um número inteiro.");
+    }
 
-      if (!Number.isInteger(sortOrder)) {
-        throw new Error("A ordem das linhas personalizadas deve ser um número inteiro.");
-      }
-
-      return {
-        id,
-        description: String(formData.get(`custom:${id}:description`) ?? "").trim() || "Linha sem descrição",
-        category,
-        sortOrder,
-        valuesByAccountId: Object.fromEntries(
-          accountIds.map((accountId) => [
-            accountId,
-            Math.abs(parseEuroCents(formData.get(`custom:${id}:account:${accountId}`))),
-          ]),
-        ),
-      };
-    });
+    return {
+      id,
+      description: String(formData.get(`custom:${id}:description`) ?? "").trim() || "Linha sem descrição",
+      sortOrder,
+      valuesByAccountId: Object.fromEntries(
+        accountIds.map((accountId) => [
+          accountId,
+          parseEuroCents(formData.get(`custom:${id}:account:${accountId}`)),
+        ]),
+      ),
+    };
+  });
 }
 
-export async function saveMonthlyBudgetAction(formData: FormData) {
+export async function saveMonthlyBudgetAction(formData: FormData): Promise<BudgetActionResult> {
   const month = normaliseMonth(String(formData.get("month") ?? ""));
 
   try {
@@ -80,31 +71,29 @@ export async function saveMonthlyBudgetAction(formData: FormData) {
 
     await saveMonthlyBudgetValues({ month, values, customItems });
     revalidatePath("/orcamento");
+    return { ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Não foi possível guardar o orçamento.";
-    redirectToBudget(month, { erro: message });
+    return { ok: false, error: message };
   }
-
-  redirectToBudget(month, { status: "saved" });
 }
 
-export async function addCustomBudgetItemAction(formData: FormData) {
+export async function addCustomBudgetItemAction(formData: FormData): Promise<AddCustomBudgetItemActionResult> {
   const month = normaliseMonth(String(formData.get("month") ?? ""));
 
   try {
-    await addCustomBudgetItem(month);
+    const item = await addCustomBudgetItem(month);
     revalidatePath("/orcamento");
+    return { ok: true, item };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Não foi possível adicionar a linha.";
-    redirectToBudget(month, { erro: message });
+    return { ok: false, error: message };
   }
-
-  redirectToBudget(month, { status: "line-added" });
 }
 
-export async function deleteCustomBudgetItemAction(formData: FormData) {
+export async function deleteCustomBudgetItemAction(formData: FormData): Promise<BudgetActionResult> {
   const month = normaliseMonth(String(formData.get("month") ?? ""));
-  const id = String(formData.get("deleteCustomItemId") ?? "").trim();
+  const id = String(formData.get("customItemId") ?? "").trim();
 
   try {
     if (!id) {
@@ -113,10 +102,9 @@ export async function deleteCustomBudgetItemAction(formData: FormData) {
 
     await deleteCustomBudgetItem(month, id);
     revalidatePath("/orcamento");
+    return { ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Não foi possível eliminar a linha.";
-    redirectToBudget(month, { erro: message });
+    return { ok: false, error: message };
   }
-
-  redirectToBudget(month, { status: "line-deleted" });
 }

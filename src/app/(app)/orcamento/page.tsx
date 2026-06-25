@@ -143,15 +143,13 @@ export default async function BudgetPage({ searchParams }: BudgetPageProps) {
             </div>
           </div>
 
-          <form action={saveMonthlyBudgetAction} className="space-y-3">
-            <input type="hidden" name="month" value={month} />
-            <MonthlyBudgetTable
-              overview={overviewResult.overview}
-              editable
-              addCustomItemAction={addCustomBudgetItemAction}
-              deleteCustomItemAction={deleteCustomBudgetItemAction}
-            />
-          </form>
+          <MonthlyBudgetTable
+            overview={overviewResult.overview}
+            editable
+            saveBudgetAction={saveMonthlyBudgetAction}
+            addCustomItemAction={addCustomBudgetItemAction}
+            deleteCustomItemAction={deleteCustomBudgetItemAction}
+          />
         </>
       ) : null}
     </div>

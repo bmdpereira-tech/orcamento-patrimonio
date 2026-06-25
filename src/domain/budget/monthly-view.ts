@@ -24,13 +24,10 @@ export type MonthlyAccountSnapshot = {
   finalBalanceCents: Cents;
 };
 
-export type CustomBudgetItemCategory = "expense" | "income";
-
 export type MonthlyCustomBudgetItem = {
   id: string;
   month: MonthId;
   description: string;
-  category: CustomBudgetItemCategory;
   sortOrder: number;
   valuesByAccountId: Record<string, Cents>;
 };
@@ -286,9 +283,7 @@ export function calculateRemainingExpenseForecasts(snapshots: readonly MonthlyAc
 }
 
 export function getCustomBudgetItemSignedAmount(item: MonthlyCustomBudgetItem, accountId: string) {
-  const amountCents = Math.abs(item.valuesByAccountId[accountId] ?? 0);
-
-  return item.category === "expense" ? -amountCents : amountCents;
+  return item.valuesByAccountId[accountId] ?? 0;
 }
 
 export function calculateCustomBudgetItemTotal(item: MonthlyCustomBudgetItem) {

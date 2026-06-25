@@ -251,8 +251,14 @@ Regras agora implementadas:
 - `Variação de liquidez = saldos finais de contas de liquidez - saldos iniciais de contas de liquidez`;
 - `Variação de investimentos = saldos finais de contas classificadas como investimento - saldos iniciais dessas contas`;
 - linhas personalizadas mensais são suportadas em `budget_items`/`budget_allocations`;
-- linhas personalizadas têm descrição, tipo (`Despesa` ou `Entrada`), valores por conta, mês, ordem e eliminação;
-- valores de linhas personalizadas são introduzidos como absolutos; o tipo determina o sinal;
+- linhas personalizadas têm descrição, valores por conta, mês, ordem e eliminação;
+- linhas personalizadas já não têm selector de tipo na tabela mensal;
+- valores de linhas personalizadas são assinados por conta: positivo adiciona, negativo subtrai e zero não tem impacto;
+- o total de cada linha personalizada é a soma algébrica dos valores por conta;
+- novas linhas personalizadas são criadas imediatamente no servidor e usam o UUID definitivo devolvido pelo Supabase;
+- a eliminação de linhas personalizadas usa apenas mês e UUID da linha, sem validar descrição, tipo ou valores;
+- a gravação da tabela mensal passou a ser automática, com actualização local imediata, gravação ao sair do campo e debounce de cerca de 650 ms;
+- a tabela mensal apresenta estado visual de gravação: `A guardar…`, `Guardado` e `Erro ao guardar`;
 - zeros em visualização normal aparecem como `–`;
 - a tabela mensal foi compactada verticalmente sem alterar a largura;
 - a página Contas usa um contentor mais largo, semelhante ao do Orçamento.
@@ -265,6 +271,14 @@ Validações técnicas reportadas pelo Codex:
 - build passou.
 
 Estas validações devem ser repetidas após novas alterações.
+
+Nota da alteração de linhas personalizadas/autosave em 25/06/2026:
+
+- `npm.cmd run lint` passou;
+- `npm.cmd run typecheck` passou;
+- `npm.cmd run build` passou;
+- `npm.cmd test` não pôde ser repetido neste ambiente depois das últimas correcções porque o Vitest/esbuild foi bloqueado pelo sandbox ao resolver a configuração na pasta OneDrive e a tentativa com permissão elevada foi recusada por limite automático de uso;
+- a validação em browser também ficou bloqueada porque o servidor local não permaneceu acessível em `127.0.0.1:3000` dentro do browser interno.
 
 ### 10.2 Problemas ainda existentes
 
@@ -429,23 +443,19 @@ Deve ser possível criar linhas específicas do mês, por exemplo:
 - Reembolso de despesa;
 - Entrada extraordinária.
 
-Tipos mínimos:
-
-- Despesa;
-- Entrada/Reembolso.
-
-Os valores são introduzidos como positivos.
-
 Regras:
 
-- Despesa: subtrai;
-- Entrada/Reembolso: adiciona.
+- não existe selector de tipo na tabela mensal;
+- valores positivos adicionam ao orçamento;
+- valores negativos subtraem ao orçamento;
+- valores zero não têm impacto;
+- o total da linha é a soma algébrica dos valores por conta;
+- não deve existir inversão de sinal baseada em tipo ou categoria.
 
 Operações:
 
 - criar;
 - editar nome;
-- alterar tipo;
 - editar por conta;
 - eliminar com confirmação.
 
@@ -454,9 +464,17 @@ As linhas personalizadas pertencem apenas ao mês seleccionado.
 Persistência:
 
 - `budget_items` com `source_type = 'manual'`;
-- `budget_items.category = 'expense'` ou `'income'`;
+- `budget_items.category = 'other'` para novas linhas, apenas por compatibilidade com o schema existente;
 - `budget_items.sort_order` para ordenação;
-- `budget_allocations` para valores por conta.
+- `budget_allocations.amount_cents` guarda o valor assinado por conta.
+
+Gravação:
+
+- a tabela mensal já não usa botão global `Guardar alterações`;
+- alterações em células actualizam os cálculos locais imediatamente;
+- a gravação acontece por autosave em blur e por debounce;
+- gravações pendentes são consolidadas para evitar que alterações antigas se sobreponham às mais recentes na mesma sessão;
+- antes de sair da página ou mudar de contexto, a tabela tenta descarregar alterações pendentes quando possível.
 
 ### 11.9 Subtotal antes do salário
 
@@ -465,12 +483,12 @@ Despesas previstas =
 Débitos directos
 + Day to day
 + Pagamentos de cartões
-+ linhas personalizadas do tipo Despesa
++ linhas personalizadas com valores negativos
 ```
 
 ```text
 Entradas previstas antes do salário =
-linhas personalizadas do tipo Entrada/Reembolso
+linhas personalizadas com valores positivos
 ```
 
 ```text
@@ -479,6 +497,8 @@ Saldo actual
 - Despesas previstas
 + Entradas previstas antes do salário
 ```
+
+Na implementação actual, as linhas personalizadas entram neste cálculo através da sua soma algébrica assinada.
 
 ### 11.10 Saldo final
 
@@ -738,6 +758,8 @@ Testes mínimos da Fase 2:
 - conta correcta para Day to day;
 - despesa personalizada; **coberto**
 - reembolso; **coberto**
+- linhas personalizadas sem selector de tipo; **coberto por testes de componente**
+- autosave da tabela mensal; **coberto por testes de componente**
 - subtotal antes do salário;
 - saldo final; **coberto com previsões personalizadas**
 - totais horizontais;
@@ -802,15 +824,14 @@ O próximo trabalho deve continuar exclusivamente na Fase 2:
 4. concluir a tab Débitos directos;
 5. implementar o plafond Day to day de €50;
 6. configurar a conta de Day to day;
-7. adicionar linhas personalizadas;
-8. corrigir cálculos verticais das previsões;
+7. validar linhas personalizadas e autosave contra o Supabase real;
+8. corrigir cálculos verticais das previsões restantes;
 9. corrigir totais horizontais restantes;
 10. tornar futuras linhas calculadas não editáveis;
-11. compactar a tabela;
-12. actualizar cartões restantes;
-13. criar testes adicionais para as restantes regras;
-14. aplicar migrations necessárias;
-15. actualizar este ficheiro;
-16. criar commit Git.
+11. actualizar cartões restantes;
+12. criar testes adicionais para as restantes regras;
+13. aplicar migrations necessárias;
+14. actualizar este ficheiro;
+15. criar commit Git.
 
 Não implementar Investimentos antes desta validação.
