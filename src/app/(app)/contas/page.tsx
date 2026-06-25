@@ -39,7 +39,7 @@ export default async function AccountsPage({ searchParams }: AccountsPageProps) 
   const statusMessage = params.status ? statusMessages[params.status] : undefined;
 
   return (
-    <div className="space-y-6">
+    <div className="relative left-1/2 w-[calc(100vw-32px)] max-w-[1800px] -translate-x-1/2 space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-sm font-medium text-brand-700">Contas</p>

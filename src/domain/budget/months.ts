@@ -52,3 +52,10 @@ export function toMonthStartDate(monthId: string) {
   const { year, month } = parseMonthId(monthId);
   return `${year}-${String(month).padStart(2, "0")}-01`;
 }
+
+export function getMonthIdForDate(date = new Date()): MonthId {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+
+  return `${year}-${month}` as MonthId;
+}

@@ -24,6 +24,31 @@ export type MonthlyAccountSnapshot = {
   finalBalanceCents: Cents;
 };
 
+export type CustomBudgetItemCategory = "expense" | "income";
+
+export type MonthlyCustomBudgetItem = {
+  id: string;
+  month: MonthId;
+  description: string;
+  category: CustomBudgetItemCategory;
+  sortOrder: number;
+  valuesByAccountId: Record<string, Cents>;
+};
+
+export type MonthlyCustomBudgetItemMutation =
+  | {
+      type: "create";
+      item: MonthlyCustomBudgetItem;
+    }
+  | {
+      type: "update";
+      item: MonthlyCustomBudgetItem;
+    }
+  | {
+      type: "delete";
+      id: string;
+    };
+
 export type BudgetRowKey =
   | "initial-balance"
   | "realised-movements"
@@ -39,13 +64,16 @@ export type BudgetRowTone = "regular" | "section-end" | "subtotal" | "salary" | 
 
 export type EditableBudgetRowKey =
   | "initial-balance"
+  | "current-balance"
   | "direct-debits"
   | "day-to-day"
   | "credit-card-payments"
   | "salary";
 
 export type BudgetTableRow = {
-  key: BudgetRowKey;
+  key: BudgetRowKey | `custom:${string}`;
+  rowKey?: BudgetRowKey;
+  customItem?: MonthlyCustomBudgetItem;
   label: string;
   valuesByAccountId: Record<string, Cents>;
   totalCents: Cents;
@@ -76,6 +104,7 @@ export type BudgetOverview = {
   accounts: LiquidityAccount[];
   investmentAssets: InvestmentAsset[];
   snapshots: MonthlyAccountSnapshot[];
+  customItems: MonthlyCustomBudgetItem[];
   tableColumns: BudgetTableColumn[];
   tableSections: BudgetTableSection[];
   liquidityCurrentCents: Cents;
@@ -150,6 +179,7 @@ const rowDefinitions: readonly {
 
 export const EDITABLE_BUDGET_ROW_KEYS: readonly EditableBudgetRowKey[] = [
   "initial-balance",
+  "current-balance",
   "direct-debits",
   "day-to-day",
   "credit-card-payments",
@@ -255,9 +285,35 @@ export function calculateRemainingExpenseForecasts(snapshots: readonly MonthlyAc
   );
 }
 
+export function getCustomBudgetItemSignedAmount(item: MonthlyCustomBudgetItem, accountId: string) {
+  const amountCents = Math.abs(item.valuesByAccountId[accountId] ?? 0);
+
+  return item.category === "expense" ? -amountCents : amountCents;
+}
+
+export function calculateCustomBudgetItemTotal(item: MonthlyCustomBudgetItem) {
+  return sumCents(Object.keys(item.valuesByAccountId).map((accountId) => getCustomBudgetItemSignedAmount(item, accountId)));
+}
+
+export function applyCustomBudgetItemMutation(
+  items: readonly MonthlyCustomBudgetItem[],
+  mutation: MonthlyCustomBudgetItemMutation,
+) {
+  if (mutation.type === "create") {
+    return [...items, mutation.item];
+  }
+
+  if (mutation.type === "update") {
+    return items.map((item) => (item.id === mutation.item.id ? mutation.item : item));
+  }
+
+  return items.filter((item) => item.id !== mutation.id);
+}
+
 export function buildBudgetTableSections(
   accounts: readonly LiquidityAccount[],
   snapshots: readonly MonthlyAccountSnapshot[],
+  customItems: readonly MonthlyCustomBudgetItem[] = [],
 ): BudgetTableSection[] {
   const snapshotsByAccount = new Map(snapshots.map((snapshot) => [snapshot.accountId, snapshot]));
 
@@ -271,6 +327,7 @@ export function buildBudgetTableSections(
 
     return {
       key: definition.key,
+      rowKey: definition.key,
       label: definition.label,
       valuesByAccountId,
       totalCents: sumCents(Object.values(valuesByAccountId)),
@@ -279,6 +336,22 @@ export function buildBudgetTableSections(
   };
 
   const rows = rowDefinitions.map(buildRow);
+  const customRows: BudgetTableRow[] = [...customItems]
+    .sort((left, right) => left.sortOrder - right.sortOrder || left.description.localeCompare(right.description))
+    .map((item) => {
+      const valuesByAccountId = Object.fromEntries(
+        accounts.map((account) => [account.id, getCustomBudgetItemSignedAmount(item, account.id)]),
+      );
+
+      return {
+        key: `custom:${item.id}`,
+        customItem: item,
+        label: item.description,
+        valuesByAccountId,
+        totalCents: sumCents(Object.values(valuesByAccountId)),
+        tone: "regular",
+      };
+    });
 
   return [
     {
@@ -289,7 +362,7 @@ export function buildBudgetTableSections(
     {
       key: "monthly-forecasts",
       label: "Previsões do mês",
-      rows: rows.slice(3, 6),
+      rows: [...rows.slice(3, 6), ...customRows],
     },
     {
       key: "before-salary",
@@ -314,11 +387,13 @@ export function buildBudgetOverview({
   accounts,
   investmentAssets,
   snapshots,
+  customItems = [],
 }: {
   month: MonthId;
   accounts: readonly LiquidityAccount[];
   investmentAssets: readonly InvestmentAsset[];
   snapshots: readonly MonthlyAccountSnapshot[];
+  customItems?: readonly MonthlyCustomBudgetItem[];
 }): BudgetOverview {
   const liquidityCurrentCents = sumAccountSnapshots(accounts, snapshots, (snapshot) => snapshot.currentBalanceCents);
   const liquidityFinalCents = sumAccountSnapshots(accounts, snapshots, (snapshot) => snapshot.finalBalanceCents);
@@ -330,8 +405,9 @@ export function buildBudgetOverview({
     accounts: [...accounts],
     investmentAssets: [...investmentAssets],
     snapshots: [...snapshots],
+    customItems: [...customItems],
     tableColumns: createBudgetTableColumns(accounts),
-    tableSections: buildBudgetTableSections(accounts, snapshots),
+    tableSections: buildBudgetTableSections(accounts, snapshots, customItems),
     liquidityCurrentCents,
     liquidityFinalCents,
     remainingExpenseForecastsCents: calculateRemainingExpenseForecasts(snapshots),

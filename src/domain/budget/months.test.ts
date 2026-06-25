@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { FIRST_MONTH, addMonths, daysInMonth, formatMonthLabel, normaliseMonth, toMonthStartDate } from "./months";
+import {
+  FIRST_MONTH,
+  addMonths,
+  daysInMonth,
+  formatMonthLabel,
+  getMonthIdForDate,
+  normaliseMonth,
+  toMonthStartDate,
+} from "./months";
 
 describe("month helpers", () => {
   it("normalises invalid or previous months to July 2026", () => {
@@ -21,5 +29,9 @@ describe("month helpers", () => {
   it("keeps month start dates explicit", () => {
     expect(toMonthStartDate("2026-07")).toBe("2026-07-01");
     expect(daysInMonth("2026-07")).toBe(31);
+  });
+
+  it("gets a month id from a date", () => {
+    expect(getMonthIdForDate(new Date(2026, 8, 25))).toBe("2026-09");
   });
 });

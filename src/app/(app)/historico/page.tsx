@@ -1,89 +1,59 @@
-import { ActualMovementsManagement } from "@/components/actual-movements-management";
-import { normaliseMonth } from "@/domain/budget/months";
-import { listActualMovements } from "@/server/budget/actual-movements";
-import { listManagedAccounts } from "@/server/budget/accounts";
-import {
-  createActualMovementAction,
-  deleteActualMovementAction,
-  updateActualMovementAction,
-} from "./actions";
+import { formatEuroCents } from "@/domain/budget/money";
+import { formatMonthLabel } from "@/domain/budget/months";
+import { getSupabaseMonthlyHistory } from "@/server/budget/monthly-history";
 
 export const dynamic = "force-dynamic";
 
-type HistoryPageProps = {
-  searchParams: Promise<{
-    month?: string;
-    accountId?: string;
-    status?: string;
-    erro?: string;
-  }>;
-};
-
-const statusMessages: Record<string, string> = {
-  created: "Movimento criado com sucesso.",
-  updated: "Movimento actualizado com sucesso.",
-  deleted: "Movimento eliminado com sucesso.",
-};
-
-export default async function HistoryPage({ searchParams }: HistoryPageProps) {
-  const params = await searchParams;
-  const selectedMonth = normaliseMonth(params.month);
-  const selectedAccountId = params.accountId?.trim() || undefined;
-  const [accountsResult, movementsResult] = await Promise.all([
-    listManagedAccounts()
-      .then((accounts) => ({ accounts, error: null }))
-      .catch((error: unknown) => ({
-        accounts: [],
-        error: error instanceof Error ? error.message : "Não foi possível carregar as contas.",
-      })),
-    listActualMovements({ month: selectedMonth, accountId: selectedAccountId })
-      .then((movements) => ({ movements, error: null }))
-      .catch((error: unknown) => ({
-        movements: [],
-        error: error instanceof Error ? error.message : "Não foi possível carregar os movimentos.",
-      })),
-  ]);
-  const statusMessage = params.status ? statusMessages[params.status] : undefined;
+export default async function HistoryPage() {
+  const historyResult = await getSupabaseMonthlyHistory()
+    .then((rows) => ({ rows, error: null }))
+    .catch((error: unknown) => ({
+      rows: [],
+      error: error instanceof Error ? error.message : "Não foi possível carregar o histórico.",
+    }));
 
   return (
     <div className="space-y-6">
       <div>
         <p className="text-sm font-medium text-brand-700">Histórico</p>
-        <h1 className="text-2xl font-semibold text-slate-950">Movimentos reais</h1>
+        <h1 className="text-2xl font-semibold text-slate-950">Evolução mensal</h1>
       </div>
 
-      {statusMessage ? (
-        <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-          {statusMessage}
-        </div>
-      ) : null}
-
-      {params.erro ? (
-        <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">{params.erro}</div>
-      ) : null}
-
-      {accountsResult.error ? (
+      {historyResult.error ? (
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
-          {accountsResult.error}
+          {historyResult.error}
         </div>
       ) : null}
 
-      {movementsResult.error ? (
-        <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
-          {movementsResult.error}
-        </div>
-      ) : null}
-
-      {!accountsResult.error && !movementsResult.error ? (
-        <ActualMovementsManagement
-          accounts={accountsResult.accounts}
-          movements={movementsResult.movements}
-          selectedMonth={selectedMonth}
-          selectedAccountId={selectedAccountId}
-          createAction={createActualMovementAction}
-          updateAction={updateActualMovementAction}
-          deleteAction={deleteActualMovementAction}
-        />
+      {!historyResult.error ? (
+        <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+          {historyResult.rows.length === 0 ? (
+            <p className="p-4 text-sm text-slate-700">Ainda não existem meses fechados para apresentar.</p>
+          ) : (
+            <table className="min-w-full divide-y divide-slate-200 text-sm">
+              <thead className="bg-slate-50 text-left text-xs font-semibold uppercase text-slate-500">
+                <tr>
+                  <th className="px-4 py-3">Mês</th>
+                  <th className="px-4 py-3 text-right">Variação de liquidez</th>
+                  <th className="px-4 py-3 text-right">Variação de investimentos</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {historyResult.rows.map((row) => (
+                  <tr key={row.month} className="hover:bg-slate-50">
+                    <td className="px-4 py-3 font-medium text-slate-900">{formatMonthLabel(row.month)}</td>
+                    <td className="px-4 py-3 text-right tabular-nums text-slate-800">
+                      {formatEuroCents(row.liquidityVariationCents)}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums text-slate-800">
+                      {formatEuroCents(row.investmentVariationCents)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
       ) : null}
     </div>
   );

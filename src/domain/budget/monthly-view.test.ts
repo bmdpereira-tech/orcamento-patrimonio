@@ -4,8 +4,12 @@ import {
   calculateInvestmentTotal,
   calculateNetWorth,
   calculateNetWorthLiquidity,
+  applyCustomBudgetItemMutation,
+  buildBudgetTableSections,
+  calculateCustomBudgetItemTotal,
   createBudgetTableColumns,
   createEmptySnapshot,
+  getCustomBudgetItemSignedAmount,
   sumAccountSnapshots,
 } from "./monthly-view";
 
@@ -74,5 +78,73 @@ describe("monthly view calculations", () => {
         "2026-07",
       ),
     ).toBe(25);
+  });
+
+  it("applies the sign of custom expense and income rows", () => {
+    const expense = {
+      id: "expense",
+      month: "2026-07" as const,
+      description: "Viagem",
+      category: "expense" as const,
+      sortOrder: 10,
+      valuesByAccountId: { santander: 4_000_00, n26: 2_500_00 },
+    };
+    const income = {
+      id: "income",
+      month: "2026-07" as const,
+      description: "Reembolso",
+      category: "income" as const,
+      sortOrder: 20,
+      valuesByAccountId: { santander: 3_000_00 },
+    };
+
+    expect(getCustomBudgetItemSignedAmount(expense, "santander")).toBe(-4_000_00);
+    expect(calculateCustomBudgetItemTotal(expense)).toBe(-6_500_00);
+    expect(calculateCustomBudgetItemTotal(income)).toBe(3_000_00);
+  });
+
+  it("places custom rows inside the forecast section", () => {
+    const [account] = INITIAL_LIQUIDITY_ACCOUNTS;
+    const sections = buildBudgetTableSections(
+      account ? [account] : [],
+      [createEmptySnapshot("santander")],
+      [
+        {
+          id: "custom",
+          month: "2026-07",
+          description: "Seguro",
+          category: "expense",
+          sortOrder: 10,
+          valuesByAccountId: { santander: 100_00 },
+        },
+      ],
+    );
+    const forecastSection = sections.find((section) => section.key === "monthly-forecasts");
+
+    expect(forecastSection?.rows.map((row) => row.label)).toContain("Seguro");
+  });
+
+  it("applies create, edit and delete mutations for custom rows", () => {
+    const created = {
+      id: "custom",
+      month: "2026-07" as const,
+      description: "Seguro",
+      category: "expense" as const,
+      sortOrder: 10,
+      valuesByAccountId: { santander: 100_00 },
+    };
+    const updated = {
+      ...created,
+      description: "Reembolso",
+      category: "income" as const,
+      valuesByAccountId: { santander: 120_00 },
+    };
+    const afterCreate = applyCustomBudgetItemMutation([], { type: "create", item: created });
+    const afterUpdate = applyCustomBudgetItemMutation(afterCreate, { type: "update", item: updated });
+    const afterDelete = applyCustomBudgetItemMutation(afterUpdate, { type: "delete", id: "custom" });
+
+    expect(afterCreate).toEqual([created]);
+    expect(afterUpdate).toEqual([updated]);
+    expect(afterDelete).toEqual([]);
   });
 });

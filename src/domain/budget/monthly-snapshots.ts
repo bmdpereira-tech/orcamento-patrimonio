@@ -1,13 +1,13 @@
-import { getActualMovementAmount } from "./actual-movements";
 import { getBudgetVisibleLiquidityAccounts, type LiquidityAccount } from "./accounts";
 import { sumCents, type Cents } from "./money";
 import { addMonths, FIRST_MONTH, type MonthId } from "./months";
-import type { MonthlyAccountSnapshot } from "./monthly-view";
+import { getCustomBudgetItemSignedAmount, type MonthlyAccountSnapshot, type MonthlyCustomBudgetItem } from "./monthly-view";
 
 export type AccountMonthState = {
   accountId: string;
   month: MonthId;
   initialBalanceOverrideCents: Cents | null;
+  currentBalanceOverrideCents: Cents | null;
 };
 
 export type MonthlySystemSourceType = "direct_debits" | "day_to_day" | "credit_card_payments" | "salary";
@@ -25,8 +25,8 @@ export function getMonthlySourceAmount(
   return sourceAmounts.get(monthlySourceAmountKey(month, sourceType, accountId)) ?? 0;
 }
 
-export function calculateCurrentBalance(initialBalanceCents: Cents, realisedMovementsCents: Cents) {
-  return sumCents([initialBalanceCents, realisedMovementsCents]);
+export function calculateRealisedMovements(currentBalanceCents: Cents, initialBalanceCents: Cents) {
+  return sumCents([currentBalanceCents, -initialBalanceCents]);
 }
 
 function monthRangeUntil(month: MonthId) {
@@ -51,8 +51,21 @@ function buildStateMap(states: readonly AccountMonthState[]) {
       stateKey(state.month, state.accountId),
       {
         initialBalanceOverrideCents: state.initialBalanceOverrideCents,
+        currentBalanceOverrideCents: state.currentBalanceOverrideCents,
       },
     ]),
+  );
+}
+
+function getCustomForecastAmount(
+  customItems: readonly MonthlyCustomBudgetItem[],
+  month: MonthId,
+  accountId: string,
+) {
+  return sumCents(
+    customItems
+      .filter((item) => item.month === month)
+      .map((item) => getCustomBudgetItemSignedAmount(item, accountId)),
   );
 }
 
@@ -61,13 +74,13 @@ export function buildSnapshotsForMonth({
   accounts,
   states,
   sourceAmounts,
-  actualMovementAmounts,
+  customItems = [],
 }: {
   month: MonthId;
   accounts: readonly LiquidityAccount[];
   states: readonly AccountMonthState[];
   sourceAmounts: ReadonlyMap<string, Cents>;
-  actualMovementAmounts: ReadonlyMap<string, Cents>;
+  customItems?: readonly MonthlyCustomBudgetItem[];
 }) {
   const stateByMonthAccount = buildStateMap(states);
   const previousFinalByAccount = new Map<string, Cents>();
@@ -81,8 +94,8 @@ export function buildSnapshotsForMonth({
         currentMonth === FIRST_MONTH
           ? state?.initialBalanceOverrideCents ?? 0
           : previousFinalByAccount.get(account.id) ?? 0;
-      const realisedMovementsCents = getActualMovementAmount(actualMovementAmounts, currentMonth, account.id);
-      const currentBalanceCents = calculateCurrentBalance(initialBalanceCents, realisedMovementsCents);
+      const currentBalanceCents = state?.currentBalanceOverrideCents ?? initialBalanceCents;
+      const realisedMovementsCents = calculateRealisedMovements(currentBalanceCents, initialBalanceCents);
       const directDebitsCents = getMonthlySourceAmount(sourceAmounts, currentMonth, "direct_debits", account.id);
       const dayToDayCents = getMonthlySourceAmount(sourceAmounts, currentMonth, "day_to_day", account.id);
       const creditCardPaymentsCents = getMonthlySourceAmount(
@@ -91,7 +104,7 @@ export function buildSnapshotsForMonth({
         "credit_card_payments",
         account.id,
       );
-      const manualForecastsCents = 0;
+      const manualForecastsCents = getCustomForecastAmount(customItems, currentMonth, account.id);
       const subtotalBeforeSalaryCents = sumCents([
         currentBalanceCents,
         directDebitsCents,

@@ -6,7 +6,7 @@ import { UI_TEXT } from "@/content/ui-text";
 import { FIRST_MONTH, addMonths, formatMonthLabel, normaliseMonth } from "@/domain/budget/months";
 import { formatEuroCents } from "@/domain/budget/money";
 import { getSupabaseBudgetOverview } from "@/server/budget/monthly-overview";
-import { saveMonthlyBudgetAction } from "./actions";
+import { addCustomBudgetItemAction, deleteCustomBudgetItemAction, saveMonthlyBudgetAction } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +20,8 @@ type BudgetPageProps = {
 
 const statusMessages: Record<string, string> = {
   saved: "Orçamento guardado com sucesso.",
+  "line-added": "Linha adicionada com sucesso.",
+  "line-deleted": "Linha eliminada com sucesso.",
 };
 
 export default async function BudgetPage({ searchParams }: BudgetPageProps) {
@@ -143,7 +145,12 @@ export default async function BudgetPage({ searchParams }: BudgetPageProps) {
 
           <form action={saveMonthlyBudgetAction} className="space-y-3">
             <input type="hidden" name="month" value={month} />
-            <MonthlyBudgetTable overview={overviewResult.overview} editable />
+            <MonthlyBudgetTable
+              overview={overviewResult.overview}
+              editable
+              addCustomItemAction={addCustomBudgetItemAction}
+              deleteCustomItemAction={deleteCustomBudgetItemAction}
+            />
           </form>
         </>
       ) : null}

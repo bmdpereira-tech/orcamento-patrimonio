@@ -6,7 +6,6 @@ import {
   getBudgetVisibleLiquidityAccounts,
   type InvestmentAsset,
 } from "@/domain/budget/accounts";
-import { buildActualMovementAmountMap } from "@/domain/budget/actual-movements";
 import { assertCents, type Cents } from "@/domain/budget/money";
 import { FIRST_MONTH, toMonthStartDate, type MonthId } from "@/domain/budget/months";
 import {
@@ -19,22 +18,27 @@ import {
   buildBudgetOverview,
   type BudgetOverview,
   type BudgetRowKey,
+  type CustomBudgetItemCategory,
   type EditableBudgetRowKey,
+  type MonthlyCustomBudgetItem,
 } from "@/domain/budget/monthly-view";
 import { createSupabaseAdminClient } from "@/server/supabase/client";
-import { listActualMovementsUntilMonth } from "./actual-movements";
 import { listManagedAccounts } from "./accounts";
 
 type AccountMonthStateRow = {
   account_id: string;
   month: string;
   initial_balance_override_cents: number | null;
+  current_balance_override_cents: number | null;
 };
 
 type BudgetItemRow = {
   id: string;
   month: string;
-  source_type: MonthlySystemSourceType;
+  description: string;
+  category: string;
+  source_type: string;
+  sort_order: number | null;
 };
 
 type BudgetAllocationRow = {
@@ -69,6 +73,14 @@ export type SystemBudgetDefinition = {
   description: string;
   category: "expense" | "income" | "transfer" | "credit_card_payment" | "investment" | "other";
   status: "planned" | "done" | "cancelled";
+};
+
+export type CustomBudgetItemSaveInput = {
+  id: string;
+  description: string;
+  category: CustomBudgetItemCategory;
+  sortOrder: number;
+  valuesByAccountId: Record<string, Cents>;
 };
 
 export const SYSTEM_BUDGET_DEFINITIONS: readonly SystemBudgetDefinition[] = [
@@ -107,14 +119,23 @@ const SYSTEM_SOURCE_TYPES = SYSTEM_BUDGET_DEFINITIONS.map((definition) => defini
 export function isSystemEditableRowKey(rowKey: BudgetRowKey): rowKey is EditableBudgetRowKey {
   return (
     rowKey === "initial-balance" ||
+    rowKey === "current-balance" ||
     SYSTEM_BUDGET_DEFINITIONS.some((definition) => definition.rowKey === rowKey)
   );
+}
+
+function isMonthlySystemSourceType(sourceType: string): sourceType is MonthlySystemSourceType {
+  return SYSTEM_SOURCE_TYPES.some((systemSourceType) => systemSourceType === sourceType);
+}
+
+function isCustomBudgetItemCategory(category: string): category is CustomBudgetItemCategory {
+  return category === "expense" || category === "income";
 }
 
 async function fetchAccountMonthStates(client: SupabaseClient, month: MonthId) {
   const { data, error } = await client
     .from("account_month_states")
-    .select("account_id,month,initial_balance_override_cents")
+    .select("account_id,month,initial_balance_override_cents,current_balance_override_cents")
     .gte("month", toMonthStartDate(FIRST_MONTH as MonthId))
     .lte("month", toMonthStartDate(month));
 
@@ -128,17 +149,18 @@ async function fetchAccountMonthStates(client: SupabaseClient, month: MonthId) {
       month: state.month.slice(0, 7) as MonthId,
       initialBalanceOverrideCents:
         state.initial_balance_override_cents === null ? null : assertCents(state.initial_balance_override_cents),
+      currentBalanceOverrideCents:
+        state.current_balance_override_cents === null ? null : assertCents(state.current_balance_override_cents),
     }),
   );
 }
 
-async function fetchSystemBudgetItems(client: SupabaseClient, month: MonthId) {
+async function fetchBudgetItems(client: SupabaseClient, month: MonthId) {
   const { data: items, error: itemsError } = await client
     .from("budget_items")
-    .select("id,month,source_type")
+    .select("id,month,description,category,source_type,sort_order")
     .gte("month", toMonthStartDate(FIRST_MONTH as MonthId))
-    .lte("month", toMonthStartDate(month))
-    .in("source_type", SYSTEM_SOURCE_TYPES);
+    .lte("month", toMonthStartDate(month));
 
   if (itemsError) {
     throw new Error(`Não foi possível carregar as linhas do orçamento: ${itemsError.message}`);
@@ -210,7 +232,7 @@ function buildSourceAmountMap(items: readonly BudgetItemRow[], allocations: read
   for (const allocation of allocations) {
     const item = itemById.get(allocation.budget_item_id);
 
-    if (!item) {
+    if (!item || !isMonthlySystemSourceType(item.source_type)) {
       continue;
     }
 
@@ -222,21 +244,51 @@ function buildSourceAmountMap(items: readonly BudgetItemRow[], allocations: read
   return amountBySource;
 }
 
+function buildCustomBudgetItems(items: readonly BudgetItemRow[], allocations: readonly BudgetAllocationRow[]) {
+  const allocationsByItemId = new Map<string, BudgetAllocationRow[]>();
+
+  for (const allocation of allocations) {
+    const itemAllocations = allocationsByItemId.get(allocation.budget_item_id) ?? [];
+    itemAllocations.push(allocation);
+    allocationsByItemId.set(allocation.budget_item_id, itemAllocations);
+  }
+
+  return items
+    .filter((item) => item.source_type === "manual" && isCustomBudgetItemCategory(item.category))
+    .map((item): MonthlyCustomBudgetItem => {
+      const valuesByAccountId = Object.fromEntries(
+        (allocationsByItemId.get(item.id) ?? []).map((allocation) => [
+          allocation.account_id,
+          assertCents(Math.abs(allocation.amount_cents)),
+        ]),
+      );
+
+      return {
+        id: item.id,
+        month: item.month.slice(0, 7) as MonthId,
+        description: item.description,
+        category: item.category as CustomBudgetItemCategory,
+        sortOrder: item.sort_order ?? 0,
+        valuesByAccountId,
+      };
+    });
+}
+
 export async function getSupabaseBudgetOverview(month: MonthId): Promise<BudgetOverview> {
   const client = createSupabaseAdminClient();
-  const [accounts, states, systemBudgetData, investmentAssets, actualMovements] = await Promise.all([
+  const [accounts, states, budgetData, investmentAssets] = await Promise.all([
     listManagedAccounts(client),
     fetchAccountMonthStates(client, month),
-    fetchSystemBudgetItems(client, month),
+    fetchBudgetItems(client, month),
     fetchInvestmentAssets(client, month),
-    listActualMovementsUntilMonth(month, client),
   ]);
   const activeAccounts = getBudgetVisibleLiquidityAccounts(accounts, month);
-  const sourceAmounts = buildSourceAmountMap(systemBudgetData.items, systemBudgetData.allocations);
-  const actualMovementAmounts = buildActualMovementAmountMap(actualMovements);
-  const snapshots = buildSnapshotsForMonth({ month, accounts, states, sourceAmounts, actualMovementAmounts });
+  const sourceAmounts = buildSourceAmountMap(budgetData.items, budgetData.allocations);
+  const customItems = buildCustomBudgetItems(budgetData.items, budgetData.allocations);
+  const snapshots = buildSnapshotsForMonth({ month, accounts, states, sourceAmounts, customItems });
+  const selectedCustomItems = customItems.filter((item) => item.month === month);
 
-  return buildBudgetOverview({ month, accounts: activeAccounts, investmentAssets, snapshots });
+  return buildBudgetOverview({ month, accounts: activeAccounts, investmentAssets, snapshots, customItems: selectedCustomItems });
 }
 
 async function ensureSystemBudgetItem(
@@ -265,6 +317,7 @@ async function ensureSystemBudgetItem(
         description: definition.description,
         category: definition.category,
         status: definition.status,
+        sort_order: 0,
       })
       .eq("id", existing.id);
 
@@ -283,6 +336,7 @@ async function ensureSystemBudgetItem(
       category: definition.category,
       status: definition.status,
       source_type: definition.sourceType,
+      sort_order: 0,
     })
     .select("id")
     .single();
@@ -297,9 +351,11 @@ async function ensureSystemBudgetItem(
 export async function saveMonthlyBudgetValues({
   month,
   values,
+  customItems = [],
 }: {
   month: MonthId;
   values: Record<EditableBudgetRowKey, Record<string, Cents>>;
+  customItems?: readonly CustomBudgetItemSaveInput[];
 }) {
   const client = createSupabaseAdminClient();
   const accounts = await listManagedAccounts(client);
@@ -307,29 +363,32 @@ export async function saveMonthlyBudgetValues({
   const accountIds = activeAccounts.map((account) => account.id);
   const monthDate = toMonthStartDate(month);
 
-  if (month === FIRST_MONTH) {
-    const accountStateRows = accountIds.map((accountId) => {
-      const row: {
-        account_id: string;
-        month: string;
-        initial_balance_override_cents: Cents;
-      } = {
-        account_id: accountId,
-        month: monthDate,
-        initial_balance_override_cents: values["initial-balance"]?.[accountId] ?? 0,
-      };
+  const accountStateRows = accountIds.map((accountId) => {
+    const row: {
+      account_id: string;
+      month: string;
+      current_balance_override_cents: Cents;
+      initial_balance_override_cents?: Cents;
+    } = {
+      account_id: accountId,
+      month: monthDate,
+      current_balance_override_cents: values["current-balance"]?.[accountId] ?? 0,
+    };
 
-      return row;
+    if (month === FIRST_MONTH) {
+      row.initial_balance_override_cents = values["initial-balance"]?.[accountId] ?? 0;
+    }
+
+    return row;
+  });
+
+  if (accountStateRows.length > 0) {
+    const { error } = await client.from("account_month_states").upsert(accountStateRows, {
+      onConflict: "account_id,month",
     });
 
-    if (accountStateRows.length > 0) {
-      const { error } = await client.from("account_month_states").upsert(accountStateRows, {
-        onConflict: "account_id,month",
-      });
-
-      if (error) {
-        throw new Error(`Não foi possível guardar os saldos mensais: ${error.message}`);
-      }
+    if (error) {
+      throw new Error(`Não foi possível guardar os saldos mensais: ${error.message}`);
     }
   }
 
@@ -352,5 +411,84 @@ export async function saveMonthlyBudgetValues({
     if (error) {
       throw new Error(`Não foi possível guardar "${definition.description}": ${error.message}`);
     }
+  }
+
+  for (const item of customItems) {
+    const { error: itemError } = await client
+      .from("budget_items")
+      .update({
+        description: item.description,
+        category: item.category,
+        sort_order: item.sortOrder,
+      })
+      .eq("id", item.id)
+      .eq("month", monthDate)
+      .eq("source_type", "manual");
+
+    if (itemError) {
+      throw new Error(`Não foi possível guardar "${item.description}": ${itemError.message}`);
+    }
+
+    const allocations = accountIds.map((accountId) => ({
+      budget_item_id: item.id,
+      account_id: accountId,
+      amount_cents: Math.abs(item.valuesByAccountId[accountId] ?? 0),
+    }));
+
+    if (allocations.length === 0) {
+      continue;
+    }
+
+    const { error: allocationsError } = await client.from("budget_allocations").upsert(allocations, {
+      onConflict: "budget_item_id,account_id",
+    });
+
+    if (allocationsError) {
+      throw new Error(`Não foi possível guardar os valores de "${item.description}": ${allocationsError.message}`);
+    }
+  }
+}
+
+export async function addCustomBudgetItem(month: MonthId) {
+  const client = createSupabaseAdminClient();
+  const monthDate = toMonthStartDate(month);
+  const { data: existingItems, error: selectError } = await client
+    .from("budget_items")
+    .select("sort_order")
+    .eq("month", monthDate)
+    .eq("source_type", "manual")
+    .order("sort_order", { ascending: false })
+    .limit(1);
+
+  if (selectError) {
+    throw new Error(`Não foi possível preparar a nova linha: ${selectError.message}`);
+  }
+
+  const maxSortOrder = (existingItems?.[0] as { sort_order: number | null } | undefined)?.sort_order ?? 0;
+  const { error } = await client.from("budget_items").insert({
+    month: monthDate,
+    description: "Nova linha",
+    category: "expense",
+    status: "planned",
+    source_type: "manual",
+    sort_order: maxSortOrder + 10,
+  });
+
+  if (error) {
+    throw new Error(`Não foi possível adicionar a linha: ${error.message}`);
+  }
+}
+
+export async function deleteCustomBudgetItem(month: MonthId, id: string) {
+  const client = createSupabaseAdminClient();
+  const { error } = await client
+    .from("budget_items")
+    .delete()
+    .eq("id", id)
+    .eq("month", toMonthStartDate(month))
+    .eq("source_type", "manual");
+
+  if (error) {
+    throw new Error(`Não foi possível eliminar a linha: ${error.message}`);
   }
 }

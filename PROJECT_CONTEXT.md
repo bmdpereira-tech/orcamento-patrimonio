@@ -152,6 +152,16 @@ Esta migration cria:
 - trigger `updated_at`;
 - RLS activa com policy `no_client_access`.
 
+Decisão posterior: a aplicação **não exige nem usa activamente** o registo movimento a movimento. A tabela `actual_movements` permanece no schema por não se fazerem alterações destrutivas a migrations já executadas, mas está actualmente inactiva na aplicação.
+
+Foi também criada a migration incremental:
+
+```text
+20260701004000_budget_items_sort_order.sql
+```
+
+Esta migration acrescenta `sort_order` a `budget_items` e cria um índice para ordenação de linhas por mês e origem. Serve as linhas personalizadas mensais da secção de previsões.
+
 Novas migrations devem:
 
 - ter timestamp posterior a `20260701002000`;
@@ -225,24 +235,27 @@ Foi implementada uma primeira fatia funcional da Fase 2:
 - preservação geral do layout aprovado;
 - `T212 Cash` mantido como nome curto.
 
-Em 25/06/2026 foi concluído o primeiro bloco funcional da Fase 2: **Movimentos reais e saldos automáticos**.
+Em 25/06/2026 foi corrigida a interpretação do primeiro bloco da Fase 2.
 
-Implementado:
+Regras agora implementadas:
 
-- migration incremental `20260701003000_actual_movements.sql`;
-- domínio `src/domain/budget/actual-movements.ts`;
-- cálculo mensal centralizado em `src/domain/budget/monthly-snapshots.ts`;
-- serviço Supabase `src/server/budget/actual-movements.ts`;
-- Server Actions de Histórico em `src/app/(app)/historico/actions.ts`;
-- componente funcional `src/components/actual-movements-management.tsx`;
-- tab Histórico com listar, filtrar por mês, filtrar por conta, criar, editar e eliminar movimentos;
-- Orçamento passa a calcular “Movimentos realizados” a partir de `actual_movements`;
-- “Saldo actual” passa a ser sempre `Saldo inicial + Movimentos realizados`;
-- `current_balance_override_cents` fica preservado na base de dados, mas deixa de ser usado nos cálculos;
-- “Movimentos realizados” e “Saldo actual” deixam de ser editáveis na tabela mensal;
-- eliminação de contas passa a considerar `actual_movements` como dependência;
-- zeros monetários válidos passam a aparecer como `0,00 €`;
-- `vitest.config.ts` passou a resolver o alias `@` e JSX automático para testes de componentes.
+- a aplicação não obriga ao registo de movimentos bancários individuais;
+- `actual_movements` permanece no schema, mas não é fonte activa dos cálculos;
+- `Saldo actual` é editável manualmente por conta e por mês;
+- `Saldo actual` é persistido em `account_month_states.current_balance_override_cents`;
+- `Movimentos realizados` é automático e read-only;
+- `Movimentos realizados = Saldo actual - Saldo inicial`;
+- o transporte mensal continua a usar o saldo final do mês anterior como saldo inicial do mês seguinte;
+- a tab Histórico mostra uma visão mensal agregada, não uma lista de transacções;
+- o Histórico apresenta apenas meses anteriores ao mês actual, ordenados do mais recente para o mais antigo;
+- `Variação de liquidez = saldos finais de contas de liquidez - saldos iniciais de contas de liquidez`;
+- `Variação de investimentos = saldos finais de contas classificadas como investimento - saldos iniciais dessas contas`;
+- linhas personalizadas mensais são suportadas em `budget_items`/`budget_allocations`;
+- linhas personalizadas têm descrição, tipo (`Despesa` ou `Entrada`), valores por conta, mês, ordem e eliminação;
+- valores de linhas personalizadas são introduzidos como absolutos; o tipo determina o sinal;
+- zeros em visualização normal aparecem como `–`;
+- a tabela mensal foi compactada verticalmente sem alterar a largura;
+- a página Contas usa um contentor mais largo, semelhante ao do Orçamento.
 
 Validações técnicas reportadas pelo Codex:
 
@@ -263,9 +276,7 @@ Problemas confirmados:
 - os totais horizontais funcionam apenas parcialmente;
 - “Débitos directos” deve ser automático;
 - “Day to day” ainda não calcula o plafond diário;
-- não é possível adicionar linhas personalizadas;
 - algumas linhas calculadas futuras ainda poderão aparecer como inputs até serem automatizadas;
-- o espaçamento vertical da tabela continua excessivo;
 - a tab Débitos directos ainda precisa de ser validada ou concluída;
 - a tab Configurações ainda precisa de suportar o plafond diário e a conta associada;
 - a tab Investimentos ainda não está implementada funcionalmente.
@@ -293,30 +304,32 @@ O saldo transportado:
 - não deve ser guardado como duplicação manual;
 - deve poder indicar a origem.
 
-### 11.2 Movimentos realizados
+### 11.2 Saldo actual
 
-“Movimentos realizados” deve ser calculado a partir da tab Histórico.
+“Saldo actual” é introduzido manualmente pelo utilizador por conta e mês.
 
-Para cada conta e mês:
+Representa o saldo real visto no banco, cartão ou outra conta no momento da actualização.
+
+O valor:
+
+- é editável na tabela mensal;
+- aceita valores positivos, negativos e zero;
+- é persistido em `account_month_states.current_balance_override_cents`;
+- não depende de movimentos individuais.
+
+### 11.3 Movimentos realizados
+
+“Movimentos realizados” é automático e apenas de leitura.
 
 ```text
-Movimentos realizados = soma dos movimentos efectivos da conta no mês
+Movimentos realizados = Saldo actual - Saldo inicial
 ```
 
 Regras:
 
-- entradas são positivas;
-- saídas são negativas;
-- o utilizador introduz montantes positivos;
-- o tipo de movimento determina o sinal;
-- não incluir movimentos posteriores à data actual;
-- a linha é sempre apenas de leitura.
-
-### 11.3 Saldo actual
-
-```text
-Saldo actual = Saldo inicial + Movimentos realizados
-```
+- o utilizador nunca edita directamente esta linha;
+- alterações em `Saldo actual` actualizam esta diferença;
+- esta linha não usa `actual_movements`.
 
 ### 11.4 Débitos directos
 
@@ -434,10 +447,16 @@ Operações:
 - editar nome;
 - alterar tipo;
 - editar por conta;
-- alterar ordem;
 - eliminar com confirmação.
 
-Reutilizar `budget_items` e `budget_allocations` se estas tabelas tiverem sido criadas para esta finalidade.
+As linhas personalizadas pertencem apenas ao mês seleccionado.
+
+Persistência:
+
+- `budget_items` com `source_type = 'manual'`;
+- `budget_items.category = 'expense'` ou `'income'`;
+- `budget_items.sort_order` para ordenação;
+- `budget_allocations` para valores por conta.
 
 ### 11.9 Subtotal antes do salário
 
@@ -474,10 +493,10 @@ A coluna Total deve somar horizontalmente todas as contas activas e visíveis pa
 Um resultado válido igual a zero deve aparecer como:
 
 ```text
-0,00 €
+–
 ```
 
-Usar `—` apenas quando o valor estiver indisponível ou não for aplicável.
+Usar `–` para zero em visualização normal. Campos editáveis podem mostrar `0,00`.
 
 ## 12. Cartões superiores
 
@@ -687,6 +706,8 @@ Toda a interface deve usar:
 - `Intl.NumberFormat("pt-PT")`;
 - duas casas decimais.
 
+Valores monetários exactamente iguais a zero devem ser apresentados como `–` em visualização normal.
+
 Nunca apresentar ao utilizador:
 
 - `NaN`;
@@ -708,23 +729,23 @@ npm.cmd run build
 
 Testes mínimos da Fase 2:
 
-- movimentos realizados automáticos; **coberto para movimentos reais**
-- entradas e saídas com sinal correcto; **coberto**
-- saldo actual; **coberto para movimentos reais**
+- movimentos realizados automáticos; **coberto por diferença entre saldo actual e inicial**
+- entradas e saídas com sinal correcto; **coberto para linhas personalizadas**
+- saldo actual; **coberto como campo editável/manual**
 - saldo inicial transportado; **coberto**
 - débitos directos;
 - Day to day para mês passado, actual e futuro;
 - conta correcta para Day to day;
-- despesa personalizada;
-- reembolso;
+- despesa personalizada; **coberto**
+- reembolso; **coberto**
 - subtotal antes do salário;
-- saldo final;
+- saldo final; **coberto com previsões personalizadas**
 - totais horizontais;
 - cartões coerentes;
 - valores zero; **coberto**
-- persistência;
+- persistência; **coberta estruturalmente via `budget_items`/`budget_allocations`; validar com Supabase real após migration**
 - recálculo após refresh;
-- linhas calculadas não editáveis; **coberto para Movimentos realizados e Saldo actual**
+- linhas calculadas não editáveis; **coberto para Movimentos realizados**
 - tabela compacta.
 
 ## 19. Comandos úteis
@@ -775,8 +796,8 @@ Antes de alterar qualquer ficheiro, lê integralmente PROJECT_CONTEXT.md e inspe
 
 O próximo trabalho deve continuar exclusivamente na Fase 2:
 
-1. aplicar no Supabase a migration `20260701003000_actual_movements.sql`;
-2. validar a tab Histórico contra o Supabase remoto/local real;
+1. aplicar no Supabase a migration `20260701004000_budget_items_sort_order.sql`;
+2. validar Orçamento e Histórico contra o Supabase remoto/local real;
 3. tornar Débitos directos automático;
 4. concluir a tab Débitos directos;
 5. implementar o plafond Day to day de €50;

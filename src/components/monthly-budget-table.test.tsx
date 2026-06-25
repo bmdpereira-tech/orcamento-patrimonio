@@ -18,7 +18,7 @@ const accounts: LiquidityAccount[] = [
 ];
 
 describe("MonthlyBudgetTable", () => {
-  it("does not render inputs for realised movements and current balance", () => {
+  it("renders current balance as editable and realised movements as read-only", () => {
     const overview = buildBudgetOverview({
       month: "2026-07",
       accounts,
@@ -41,7 +41,24 @@ describe("MonthlyBudgetTable", () => {
     );
 
     expect(screen.queryByLabelText("Movimentos realizados — Conta A")).toBeNull();
-    expect(screen.queryByLabelText("Saldo actual — Conta A")).toBeNull();
+    expect(screen.getByLabelText("Saldo actual — Conta A")).toBeTruthy();
     expect(screen.getByLabelText("Saldo inicial — Conta A")).toBeTruthy();
+  });
+
+  it("shows the add custom line button in the forecasts section", () => {
+    const overview = buildBudgetOverview({
+      month: "2026-07",
+      accounts,
+      investmentAssets: [],
+      snapshots: [createEmptySnapshot("account-a")],
+    });
+
+    render(
+      <form>
+        <MonthlyBudgetTable overview={overview} editable addCustomItemAction={async () => {}} />
+      </form>,
+    );
+
+    expect(screen.getByRole("button", { name: "Adicionar linha" })).toBeTruthy();
   });
 });

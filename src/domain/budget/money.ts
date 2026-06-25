@@ -17,6 +17,10 @@ export function sumCents(amounts: readonly Cents[]) {
 export function formatEuroCents(amountCents: Cents) {
   assertCents(amountCents);
 
+  if (amountCents === 0) {
+    return "–";
+  }
+
   const absoluteValue = Math.abs(amountCents);
   const formatted = new Intl.NumberFormat(APP_LOCALE, {
     style: "currency",
