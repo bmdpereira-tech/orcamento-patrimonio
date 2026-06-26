@@ -2,6 +2,12 @@
 
 import { Plus, Trash2 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  buildCreditCardPaymentAmountMap,
+  buildMonthlyCreditCardPayments,
+  type CreditCardStatementOverride,
+  type MonthlyCreditCardPayment,
+} from "@/domain/budget/credit-card-payments";
 import type {
   BudgetOverview,
   BudgetRowTone,
@@ -20,7 +26,7 @@ import {
   sumCents,
   type Cents,
 } from "@/domain/budget/money";
-import { FIRST_MONTH } from "@/domain/budget/months";
+import { FIRST_MONTH, type MonthId } from "@/domain/budget/months";
 import { cn } from "@/lib/cn";
 import { UI_TEXT } from "@/content/ui-text";
 
@@ -36,6 +42,16 @@ type DirectDebitExclusionActionResult =
       };
     }
   | { ok: false; error: string };
+type CreditCardStatementOverrideActionResult =
+  | {
+      ok: true;
+      override: {
+        creditCardAccountId: string;
+        month: string;
+        statementAmountCents: number | null;
+      };
+    }
+  | { ok: false; error: string };
 
 type MonthlyBudgetTableProps = {
   overview: BudgetOverview;
@@ -44,6 +60,9 @@ type MonthlyBudgetTableProps = {
   addCustomItemAction?: (formData: FormData) => Promise<AddCustomBudgetItemActionResult>;
   deleteCustomItemAction?: (formData: FormData) => Promise<BudgetActionResult>;
   setDirectDebitExcludedAction?: (formData: FormData) => Promise<DirectDebitExclusionActionResult>;
+  setCreditCardStatementOverrideAction?: (
+    formData: FormData,
+  ) => Promise<CreditCardStatementOverrideActionResult>;
 };
 
 type EditableCellValues = Record<EditableBudgetRowKey, Record<string, string>>;
@@ -131,10 +150,6 @@ function getSnapshotValue(snapshot: MonthlyAccountSnapshot, rowKey: EditableBudg
       return snapshot.initialBalanceCents;
     case "current-balance":
       return snapshot.currentBalanceCents;
-    case "day-to-day":
-      return snapshot.dayToDayCents;
-    case "credit-card-payments":
-      return snapshot.creditCardPaymentsCents;
     case "salary":
       return snapshot.salaryCents;
   }
@@ -189,6 +204,44 @@ function createDirectDebitExclusionState(overview: BudgetOverview) {
   ) as Record<string, boolean>;
 }
 
+function createCreditCardOverrideValues(overview: BudgetOverview) {
+  return Object.fromEntries(
+    overview.creditCardPayments.map((payment) => [
+      payment.creditCardAccountId,
+      payment.overrideAmountCents === undefined ? "" : formatEditableEuroCents(payment.overrideAmountCents),
+    ]),
+  ) as Record<string, string>;
+}
+
+function createCreditCardOverrideEnabledState(overview: BudgetOverview) {
+  return Object.fromEntries(
+    overview.creditCardPayments.map((payment) => [
+      payment.creditCardAccountId,
+      payment.overrideAmountCents !== undefined,
+    ]),
+  ) as Record<string, boolean>;
+}
+
+function buildCreditCardStatementOverrides(
+  month: MonthId,
+  overrideValues: Readonly<Record<string, string>>,
+  overrideEnabledByCardId: Readonly<Record<string, boolean>>,
+): CreditCardStatementOverride[] {
+  return Object.entries(overrideValues).flatMap(([creditCardAccountId, value]) => {
+    if (!overrideEnabledByCardId[creditCardAccountId]) {
+      return [];
+    }
+
+    const statementAmountCents = tryParseCurrencyInput(value.trim() || "0");
+
+    if (statementAmountCents === null || statementAmountCents < 0) {
+      return [];
+    }
+
+    return [{ creditCardAccountId, month, statementAmountCents }];
+  });
+}
+
 function calculateDirectDebitAmountsByAccount(
   occurrences: readonly MonthlyDirectDebitOccurrence[],
   excludedByRuleId: Readonly<Record<string, boolean>>,
@@ -219,16 +272,20 @@ function parseCustomItemState(item: LocalCustomBudgetItem, accounts: readonly Li
   };
 }
 
-function calculateDisplaySnapshots({
+function calculateDisplayBudgetState({
   overview,
   cellValues,
   customItems,
   directDebitExclusions,
+  creditCardOverrideValues,
+  creditCardOverrideEnabled,
 }: {
   overview: BudgetOverview;
   cellValues: EditableCellValues;
   customItems: readonly MonthlyCustomBudgetItem[];
   directDebitExclusions: Readonly<Record<string, boolean>>;
+  creditCardOverrideValues: Readonly<Record<string, string>>;
+  creditCardOverrideEnabled: Readonly<Record<string, boolean>>;
 }) {
   const snapshotByAccountId = new Map(overview.snapshots.map((snapshot) => [snapshot.accountId, snapshot]));
   const hasDirectDebitOccurrences = overview.directDebitOccurrences.length > 0;
@@ -237,7 +294,7 @@ function calculateDisplaySnapshots({
     directDebitExclusions,
   );
 
-  return overview.accounts.map((account): MonthlyAccountSnapshot => {
+  const baseSnapshots = overview.accounts.map((account): MonthlyAccountSnapshot => {
     const sourceSnapshot = snapshotByAccountId.get(account.id);
     const initialBalanceCents =
       overview.month === FIRST_MONTH
@@ -247,21 +304,12 @@ function calculateDisplaySnapshots({
     const directDebitsCents = hasDirectDebitOccurrences
       ? directDebitAmountsByAccount.get(account.id) ?? 0
       : sourceSnapshot?.directDebitsCents ?? 0;
-    const dayToDayCents = parseCurrencyInput(cellValues["day-to-day"][account.id] ?? "0");
-    const creditCardPaymentsCents = parseCurrencyInput(cellValues["credit-card-payments"][account.id] ?? "0");
+    const dayToDayCents = sourceSnapshot?.dayToDayCents ?? 0;
     const salaryCents = parseCurrencyInput(cellValues.salary[account.id] ?? "0");
     const manualForecastsCents = sumCents(
       customItems.map((item) => item.valuesByAccountId[account.id] ?? 0),
     );
     const realisedMovementsCents = sumCents([currentBalanceCents, -initialBalanceCents]);
-    const subtotalBeforeSalaryCents = sumCents([
-      currentBalanceCents,
-      directDebitsCents,
-      dayToDayCents,
-      creditCardPaymentsCents,
-      manualForecastsCents,
-    ]);
-    const finalBalanceCents = sumCents([subtotalBeforeSalaryCents, salaryCents]);
 
     return {
       accountId: account.id,
@@ -270,13 +318,43 @@ function calculateDisplaySnapshots({
       currentBalanceCents,
       directDebitsCents,
       dayToDayCents,
-      creditCardPaymentsCents,
+      creditCardPaymentsCents: 0,
       manualForecastsCents,
-      subtotalBeforeSalaryCents,
+      subtotalBeforeSalaryCents: 0,
       salaryCents,
-      finalBalanceCents,
+      finalBalanceCents: 0,
     };
   });
+  const creditCardPayments = buildMonthlyCreditCardPayments({
+    accounts: overview.accounts,
+    snapshots: baseSnapshots,
+    month: overview.month,
+    overrides: buildCreditCardStatementOverrides(
+      overview.month,
+      creditCardOverrideValues,
+      creditCardOverrideEnabled,
+    ),
+  });
+  const creditCardPaymentAmountsByAccount = buildCreditCardPaymentAmountMap(creditCardPayments);
+  const snapshots = baseSnapshots.map((snapshot): MonthlyAccountSnapshot => {
+    const creditCardPaymentsCents = creditCardPaymentAmountsByAccount.get(snapshot.accountId) ?? 0;
+    const subtotalBeforeSalaryCents = sumCents([
+      snapshot.currentBalanceCents,
+      snapshot.directDebitsCents,
+      snapshot.dayToDayCents,
+      creditCardPaymentsCents,
+      snapshot.manualForecastsCents,
+    ]);
+
+    return {
+      ...snapshot,
+      creditCardPaymentsCents,
+      subtotalBeforeSalaryCents,
+      finalBalanceCents: sumCents([subtotalBeforeSalaryCents, snapshot.salaryCents]),
+    };
+  });
+
+  return { snapshots, creditCardPayments };
 }
 
 function buildSaveFormData({
@@ -587,6 +665,106 @@ function MonthlyDirectDebitsChecklist({
   );
 }
 
+function MonthlyCreditCardPaymentCards({
+  payments,
+  editable,
+  overrideValues,
+  overrideEnabled,
+  saveStatus,
+  saveError,
+  onChange,
+  onBlur,
+  onToggleOverride,
+}: {
+  payments: readonly MonthlyCreditCardPayment[];
+  editable: boolean;
+  overrideValues: Readonly<Record<string, string>>;
+  overrideEnabled: Readonly<Record<string, boolean>>;
+  saveStatus: SaveStatus;
+  saveError: string | null;
+  onChange: (creditCardAccountId: string, value: string) => void;
+  onBlur: (creditCardAccountId: string) => void;
+  onToggleOverride: (payment: MonthlyCreditCardPayment, enabled: boolean) => void;
+}) {
+  const statusLabel =
+    saveStatus === "saving"
+      ? "A guardar…"
+      : saveStatus === "saved"
+        ? "Guardado"
+        : saveStatus === "error"
+          ? "Erro ao guardar"
+          : null;
+
+  return (
+    <section className="space-y-2">
+      {statusLabel ? (
+        <p
+          aria-live="polite"
+          title={saveError ?? undefined}
+          className={cn(
+            "text-right text-xs font-medium",
+            saveStatus === "error" ? "text-red-700" : "text-slate-500",
+          )}
+        >
+          {statusLabel}
+        </p>
+      ) : null}
+      {saveError && saveStatus === "error" ? (
+        <div className="rounded-md border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-800">{saveError}</div>
+      ) : null}
+
+      {payments.length === 0 ? (
+        <p className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm">
+          Não existem cartões de crédito activos neste mês.
+        </p>
+      ) : (
+        <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+          {payments.map((payment) => {
+            const overrideValue = overrideValues[payment.creditCardAccountId] ?? "";
+            const hasOverride = overrideEnabled[payment.creditCardAccountId] === true;
+            const controlsDisabled = !editable || Boolean(payment.warning);
+            const inputDisabled = controlsDisabled || !hasOverride;
+
+            return (
+              <article
+                key={payment.creditCardAccountId}
+                className="grid gap-2 rounded-lg border border-slate-200 bg-white p-3 shadow-sm lg:grid-cols-[minmax(120px,0.85fr)_minmax(140px,1fr)_auto] lg:items-center"
+              >
+                <h3 className="truncate text-sm font-semibold text-slate-900">{payment.creditCardName}</h3>
+                <label className="min-w-0 text-xs font-medium text-slate-700">
+                  Valor do extracto
+                  <span className="sr-only"> — {payment.creditCardName}</span>
+                  <input
+                    value={overrideValue}
+                    onChange={(event) => onChange(payment.creditCardAccountId, event.target.value)}
+                    onBlur={() => onBlur(payment.creditCardAccountId)}
+                    inputMode="decimal"
+                    disabled={inputDisabled}
+                    placeholder={formatEditableEuroCents(payment.automaticPaymentCents)}
+                    aria-label={`Valor do extracto — ${payment.creditCardName}`}
+                    className="mt-1 h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-right tabular-nums text-slate-900 shadow-inner outline-none transition focus:border-brand-500 focus:ring-1 focus:ring-brand-500 disabled:bg-slate-50 disabled:text-slate-500"
+                  />
+                </label>
+                <label className="inline-flex items-center gap-2 whitespace-nowrap text-sm font-medium text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={hasOverride}
+                    disabled={controlsDisabled}
+                    onChange={(event) => onToggleOverride(payment, event.target.checked)}
+                    aria-label={`Usar valor do extracto — ${payment.creditCardName}`}
+                    className="h-4 w-4 rounded border-slate-300 text-brand-700 focus:ring-brand-600 disabled:opacity-60"
+                  />
+                  Usar valor do extracto
+                </label>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function MonthlyBudgetTable({
   overview,
   editable = false,
@@ -594,6 +772,7 @@ export function MonthlyBudgetTable({
   addCustomItemAction,
   deleteCustomItemAction,
   setDirectDebitExcludedAction,
+  setCreditCardStatementOverrideAction,
 }: MonthlyBudgetTableProps) {
   const [cellValues, setCellValues] = useState(() => createEditableCellValues(overview));
   const [customItems, setCustomItems] = useState(() => createCustomItemStates(overview));
@@ -602,6 +781,14 @@ export function MonthlyBudgetTable({
   const [directDebitSaveStatus, setDirectDebitSaveStatus] = useState<SaveStatus>("idle");
   const [directDebitSaveError, setDirectDebitSaveError] = useState<string | null>(null);
   const [directDebitExclusions, setDirectDebitExclusions] = useState(() => createDirectDebitExclusionState(overview));
+  const [creditCardOverrideValues, setCreditCardOverrideValues] = useState(() =>
+    createCreditCardOverrideValues(overview),
+  );
+  const [creditCardOverrideEnabled, setCreditCardOverrideEnabled] = useState(() =>
+    createCreditCardOverrideEnabledState(overview),
+  );
+  const [creditCardSaveStatus, setCreditCardSaveStatus] = useState<SaveStatus>("idle");
+  const [creditCardSaveError, setCreditCardSaveError] = useState<string | null>(null);
   const [isAddingCustomItem, setIsAddingCustomItem] = useState(false);
   const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
 
@@ -609,9 +796,14 @@ export function MonthlyBudgetTable({
   const cellValuesRef = useRef(cellValues);
   const customItemsRef = useRef(customItems);
   const directDebitExclusionsRef = useRef(directDebitExclusions);
+  const creditCardOverrideValuesRef = useRef(creditCardOverrideValues);
+  const creditCardOverrideEnabledRef = useRef(creditCardOverrideEnabled);
   const directDebitSaveVersionsRef = useRef(new Map<string, number>());
+  const creditCardSaveVersionsRef = useRef(new Map<string, number>());
+  const creditCardSaveTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const saveBudgetActionRef = useRef(saveBudgetAction);
   const setDirectDebitExcludedActionRef = useRef(setDirectDebitExcludedAction);
+  const setCreditCardStatementOverrideActionRef = useRef(setCreditCardStatementOverrideAction);
   const debounceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveInFlightRef = useRef<Promise<void> | null>(null);
   const saveAfterCurrentRef = useRef(false);
@@ -625,22 +817,33 @@ export function MonthlyBudgetTable({
     [customItems, overview.accounts],
   );
   const displayOverview = useMemo(() => {
-    const snapshots = calculateDisplaySnapshots({
+    const displayState = calculateDisplayBudgetState({
       overview,
       cellValues,
       customItems: parsedCustomItems,
       directDebitExclusions,
+      creditCardOverrideValues,
+      creditCardOverrideEnabled,
     });
 
     return buildBudgetOverview({
       month: overview.month,
       accounts: overview.accounts,
       investmentAssets: overview.investmentAssets,
-      snapshots,
+      snapshots: displayState.snapshots,
       customItems: parsedCustomItems,
       directDebitOccurrences: overview.directDebitOccurrences,
+      dailyBudgetForecast: overview.dailyBudgetForecast,
+      creditCardPayments: displayState.creditCardPayments,
     });
-  }, [cellValues, directDebitExclusions, overview, parsedCustomItems]);
+  }, [
+    cellValues,
+    creditCardOverrideEnabled,
+    creditCardOverrideValues,
+    directDebitExclusions,
+    overview,
+    parsedCustomItems,
+  ]);
   const customItemById = useMemo(
     () => new Map(customItems.map((item) => [item.id, item])),
     [customItems],
@@ -671,6 +874,125 @@ export function MonthlyBudgetTable({
       });
     },
     [],
+  );
+
+  const updateCreditCardOverrideValues = useCallback(
+    (updater: (current: Record<string, string>) => Record<string, string>) => {
+      const next = updater(creditCardOverrideValuesRef.current);
+      creditCardOverrideValuesRef.current = next;
+      setCreditCardOverrideValues(next);
+    },
+    [],
+  );
+
+  const updateCreditCardOverrideEnabled = useCallback(
+    (updater: (current: Record<string, boolean>) => Record<string, boolean>) => {
+      const next = updater(creditCardOverrideEnabledRef.current);
+      creditCardOverrideEnabledRef.current = next;
+      setCreditCardOverrideEnabled(next);
+    },
+    [],
+  );
+
+  const getCreditCardStatementAmountForSave = useCallback((creditCardAccountId: string, overrideValue?: string) => {
+    if (!creditCardOverrideEnabledRef.current[creditCardAccountId]) {
+      return "";
+    }
+
+    const value = overrideValue ?? creditCardOverrideValuesRef.current[creditCardAccountId] ?? "";
+    const parsed = tryParseCurrencyInput(value.trim() || "0");
+
+    if (parsed === null || parsed < 0) {
+      return null;
+    }
+
+    return value.trim() || "0,00";
+  }, []);
+
+  const flushCreditCardOverride = useCallback(
+    async (creditCardAccountId: string, overrideValue?: string) => {
+      const action = setCreditCardStatementOverrideActionRef.current;
+
+      if (!action) {
+        return;
+      }
+
+      const timer = creditCardSaveTimersRef.current.get(creditCardAccountId);
+
+      if (timer) {
+        clearTimeout(timer);
+        creditCardSaveTimersRef.current.delete(creditCardAccountId);
+      }
+
+      const version = (creditCardSaveVersionsRef.current.get(creditCardAccountId) ?? 0) + 1;
+      creditCardSaveVersionsRef.current.set(creditCardAccountId, version);
+      setCreditCardSaveStatus("saving");
+      setCreditCardSaveError(null);
+
+      const formData = new FormData();
+      const statementAmount = getCreditCardStatementAmountForSave(creditCardAccountId, overrideValue);
+
+      if (statementAmount === null) {
+        setCreditCardSaveStatus("error");
+        setCreditCardSaveError("O valor do extracto não pode ser negativo.");
+        return;
+      }
+
+      formData.set("creditCardAccountId", creditCardAccountId);
+      formData.set("month", overviewRef.current.month);
+      formData.set("statementAmount", statementAmount);
+
+      const result = await action(formData);
+
+      if (creditCardSaveVersionsRef.current.get(creditCardAccountId) !== version) {
+        return;
+      }
+
+      if (!result.ok) {
+        setCreditCardSaveStatus("error");
+        setCreditCardSaveError(result.error);
+        return;
+      }
+
+      updateCreditCardOverrideValues((current) => ({
+        ...current,
+        [result.override.creditCardAccountId]:
+          result.override.statementAmountCents === null
+            ? ""
+            : formatEditableEuroCents(result.override.statementAmountCents),
+      }));
+      updateCreditCardOverrideEnabled((current) => ({
+        ...current,
+        [result.override.creditCardAccountId]: result.override.statementAmountCents !== null,
+      }));
+      setCreditCardSaveStatus("saved");
+      setCreditCardSaveError(null);
+    },
+    [getCreditCardStatementAmountForSave, updateCreditCardOverrideEnabled, updateCreditCardOverrideValues],
+  );
+
+  const scheduleCreditCardOverrideSave = useCallback(
+    (creditCardAccountId: string) => {
+      if (!editable || !setCreditCardStatementOverrideActionRef.current) {
+        return;
+      }
+
+      const currentTimer = creditCardSaveTimersRef.current.get(creditCardAccountId);
+
+      if (currentTimer) {
+        clearTimeout(currentTimer);
+      }
+
+      setCreditCardSaveStatus("saving");
+      setCreditCardSaveError(null);
+      creditCardSaveTimersRef.current.set(
+        creditCardAccountId,
+        setTimeout(() => {
+          void flushCreditCardOverride(creditCardAccountId);
+        }, AUTOSAVE_DELAY_MS),
+      );
+    },
+    [editable, flushCreditCardOverride],
   );
 
   const flushSave = useCallback(async () => {
@@ -804,6 +1126,73 @@ export function MonthlyBudgetTable({
       );
     },
     [updateCustomItems],
+  );
+
+  const normaliseCreditCardOverrideValue = useCallback(
+    (creditCardAccountId: string) => {
+      updateCreditCardOverrideValues((current) => {
+        const currentValue = current[creditCardAccountId] ?? "";
+        const parsed = tryParseCurrencyInput(currentValue);
+
+        if (!creditCardOverrideEnabledRef.current[creditCardAccountId]) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [creditCardAccountId]: parsed === null || parsed < 0 ? currentValue : formatEditableEuroCents(parsed),
+        };
+      });
+    },
+    [updateCreditCardOverrideValues],
+  );
+
+  const handleCreditCardOverrideChange = useCallback(
+    (creditCardAccountId: string, value: string) => {
+      const parsed = tryParseCurrencyInput(value);
+      const trimmedValue = value.trim();
+
+      if (trimmedValue.startsWith("-") || trimmedValue.startsWith("(") || (parsed !== null && parsed < 0)) {
+        setCreditCardSaveStatus("error");
+        setCreditCardSaveError("O valor do extracto não pode ser negativo.");
+        return;
+      }
+
+      updateCreditCardOverrideValues((current) => ({
+        ...current,
+        [creditCardAccountId]: value,
+      }));
+      scheduleCreditCardOverrideSave(creditCardAccountId);
+    },
+    [scheduleCreditCardOverrideSave, updateCreditCardOverrideValues],
+  );
+
+  const handleCreditCardOverrideBlur = useCallback(
+    (creditCardAccountId: string) => {
+      normaliseCreditCardOverrideValue(creditCardAccountId);
+      void flushCreditCardOverride(creditCardAccountId);
+    },
+    [flushCreditCardOverride, normaliseCreditCardOverrideValue],
+  );
+
+  const handleCreditCardOverrideToggle = useCallback(
+    (payment: MonthlyCreditCardPayment, enabled: boolean) => {
+      const nextValue = enabled
+        ? creditCardOverrideValuesRef.current[payment.creditCardAccountId]?.trim() ||
+          formatEditableEuroCents(payment.automaticPaymentCents)
+        : "";
+
+      updateCreditCardOverrideEnabled((current) => ({
+        ...current,
+        [payment.creditCardAccountId]: enabled,
+      }));
+      updateCreditCardOverrideValues((current) => ({
+        ...current,
+        [payment.creditCardAccountId]: nextValue,
+      }));
+      void flushCreditCardOverride(payment.creditCardAccountId, nextValue);
+    },
+    [flushCreditCardOverride, updateCreditCardOverrideEnabled, updateCreditCardOverrideValues],
   );
 
   const handleAddCustomItem = useCallback(async () => {
@@ -944,15 +1333,24 @@ export function MonthlyBudgetTable({
   }, [setDirectDebitExcludedAction]);
 
   useEffect(() => {
+    setCreditCardStatementOverrideActionRef.current = setCreditCardStatementOverrideAction;
+  }, [setCreditCardStatementOverrideAction]);
+
+  useEffect(() => {
     const nextCellValues = createEditableCellValues(overview);
     const nextCustomItems = createCustomItemStates(overview);
     const nextDirectDebitExclusions = createDirectDebitExclusionState(overview);
+    const nextCreditCardOverrideValues = createCreditCardOverrideValues(overview);
+    const nextCreditCardOverrideEnabled = createCreditCardOverrideEnabledState(overview);
 
     overviewRef.current = overview;
     cellValuesRef.current = nextCellValues;
     customItemsRef.current = nextCustomItems;
     directDebitExclusionsRef.current = nextDirectDebitExclusions;
+    creditCardOverrideValuesRef.current = nextCreditCardOverrideValues;
+    creditCardOverrideEnabledRef.current = nextCreditCardOverrideEnabled;
     directDebitSaveVersionsRef.current.clear();
+    creditCardSaveVersionsRef.current.clear();
     dirtyRef.current = false;
     saveAfterCurrentRef.current = false;
     lastSavedSignatureRef.current = createSaveSignature({
@@ -966,18 +1364,33 @@ export function MonthlyBudgetTable({
       debounceTimeoutRef.current = null;
     }
 
+    for (const timer of creditCardSaveTimersRef.current.values()) {
+      clearTimeout(timer);
+    }
+    creditCardSaveTimersRef.current.clear();
+
     setCellValues(nextCellValues);
     setCustomItems(nextCustomItems);
     setDirectDebitExclusions(nextDirectDebitExclusions);
+    setCreditCardOverrideValues(nextCreditCardOverrideValues);
+    setCreditCardOverrideEnabled(nextCreditCardOverrideEnabled);
     setSaveStatus("idle");
     setSaveError(null);
     setDirectDebitSaveStatus("idle");
     setDirectDebitSaveError(null);
+    setCreditCardSaveStatus("idle");
+    setCreditCardSaveError(null);
   }, [overview]);
 
   useEffect(() => {
+    const flushPendingCreditCardOverrides = () => {
+      for (const creditCardAccountId of creditCardSaveTimersRef.current.keys()) {
+        void flushCreditCardOverride(creditCardAccountId);
+      }
+    };
     const handleBeforeUnload = () => {
       void flushSave();
+      flushPendingCreditCardOverrides();
     };
 
     window.addEventListener("beforeunload", handleBeforeUnload);
@@ -985,8 +1398,9 @@ export function MonthlyBudgetTable({
     return () => {
       window.removeEventListener("beforeunload", handleBeforeUnload);
       void flushSave();
+      flushPendingCreditCardOverrides();
     };
-  }, [flushSave]);
+  }, [flushCreditCardOverride, flushSave]);
 
   const columnCount = displayOverview.accounts.length + 2;
   const tableWidthPx =
@@ -1002,25 +1416,26 @@ export function MonthlyBudgetTable({
 
   return (
     <div className="grid items-start gap-4 2xl:grid-cols-[minmax(0,max-content)_360px]">
-      <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div className="flex flex-col gap-1 border-b border-slate-200 px-4 py-2 sm:flex-row sm:items-center sm:justify-between">
-        <h2 className="text-base font-semibold text-slate-950">{UI_TEXT.budget.monthlyTable}</h2>
-        {editable && statusLabel ? (
-          <p
-            aria-live="polite"
-            title={saveError ?? undefined}
-            className={cn(
-              "text-xs font-medium",
-              saveStatus === "error" ? "text-red-700" : "text-slate-500",
-            )}
-          >
-            {statusLabel}
-          </p>
-        ) : null}
-      </div>
+      <div className="space-y-3">
+        <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-col gap-1 border-b border-slate-200 px-4 py-2 sm:flex-row sm:items-center sm:justify-between">
+          <h2 className="text-base font-semibold text-slate-950">{UI_TEXT.budget.monthlyTable}</h2>
+          {editable && statusLabel ? (
+            <p
+              aria-live="polite"
+              title={saveError ?? undefined}
+              className={cn(
+                "text-xs font-medium",
+                saveStatus === "error" ? "text-red-700" : "text-slate-500",
+              )}
+            >
+              {statusLabel}
+            </p>
+          ) : null}
+        </div>
 
-      <div className="overflow-x-auto">
-        <table className="table-fixed border-separate border-spacing-0 text-sm" style={{ width: tableWidthPx }}>
+        <div className="overflow-x-auto">
+          <table className="table-fixed border-separate border-spacing-0 text-sm" style={{ width: tableWidthPx }}>
           <caption className="sr-only">{UI_TEXT.budget.monthlyTable}</caption>
           <colgroup>
             <col style={{ width: DESCRIPTION_COLUMN_WIDTH_PX }} />
@@ -1223,19 +1638,34 @@ export function MonthlyBudgetTable({
               </td>
             </tr>
           </tbody>
-        </table>
-      </div>
-      </section>
+          </table>
+        </div>
+        </section>
 
-      <MonthlyDirectDebitsChecklist
-        occurrences={displayOverview.directDebitOccurrences}
-        excludedByRuleId={directDebitExclusions}
-        saveStatus={directDebitSaveStatus}
-        saveError={directDebitSaveError}
-        onToggle={(occurrence, excludedFromForecast) =>
-          void handleDirectDebitToggle(occurrence, excludedFromForecast)
-        }
-      />
+        <MonthlyCreditCardPaymentCards
+          payments={displayOverview.creditCardPayments}
+          editable={editable}
+          overrideValues={creditCardOverrideValues}
+          overrideEnabled={creditCardOverrideEnabled}
+          saveStatus={creditCardSaveStatus}
+          saveError={creditCardSaveError}
+          onChange={handleCreditCardOverrideChange}
+          onBlur={handleCreditCardOverrideBlur}
+          onToggleOverride={handleCreditCardOverrideToggle}
+        />
+      </div>
+
+      <div className="space-y-4">
+        <MonthlyDirectDebitsChecklist
+          occurrences={displayOverview.directDebitOccurrences}
+          excludedByRuleId={directDebitExclusions}
+          saveStatus={directDebitSaveStatus}
+          saveError={directDebitSaveError}
+          onToggle={(occurrence, excludedFromForecast) =>
+            void handleDirectDebitToggle(occurrence, excludedFromForecast)
+          }
+        />
+      </div>
     </div>
   );
 }

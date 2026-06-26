@@ -197,6 +197,12 @@ Esta migration cria `recurring_rule_month_states` para controlar, por mês, se u
 
 Não são criados estados mensais antecipadamente. A ausência de registo significa `excluded_from_forecast = false`.
 
+O bloco Day to day e Pagamentos de cartões, implementado em 25/06/2026, **não exigiu migration nova**. Foram reutilizadas estruturas já existentes no schema:
+
+- `daily_budget_versions`;
+- `credit_card_statement_overrides`;
+- `accounts.linked_payment_account_id`.
+
 Novas migrations devem:
 
 - ter timestamp posterior a `20260701002000`;
@@ -377,17 +383,69 @@ Nota de limpeza de dados no Supabase em 25/06/2026:
 - não houve alteração de schema, migrations ou lógica funcional;
 - depois da limpeza, Setembro e Outubro de 2026 apresentam apenas os débitos válidos restantes, `Luz rexaldia` e `Seguro Saúde`.
 
+Nota da implementação Day to day e Pagamentos de cartões em 25/06/2026:
+
+- a tab Configurações passou a permitir gravar versões de Day to day com plafond diário, conta e mês de entrada em vigor;
+- as versões são persistidas em `daily_budget_versions`;
+- para cada mês é usada a versão mais recente com `effective_from_month <= mês seleccionado`;
+- a conta de Day to day pode ser qualquer conta activa, sem filtrar por tipo;
+- contas arquivadas não ficam disponíveis para novas versões, mas versões antigas continuam legíveis;
+- a linha `Day to day` no Orçamento é automática, negativa, apenas de leitura e aplicada só à conta configurada;
+- mês passado calcula `0`;
+- mês actual inclui o dia actual, em Europe/Lisbon, através de `dias_do_mês - dia_actual + 1`;
+- mês futuro usa todos os dias do mês;
+- valores antigos de `budget_items`/`budget_allocations` para `day_to_day` são ignorados pelos cálculos actuais;
+- cartões de crédito usam `accounts.linked_payment_account_id` como conta de pagamento;
+- a linha `Pagamentos de cartões` é automática e apenas de leitura;
+- o pagamento automático de cada cartão é `max(0, -Saldo actual do cartão)`, antes de previsões futuras;
+- a distribuição é uma transferência de soma zero: valor negativo na conta de pagamento e positivo no cartão;
+- se faltar conta de pagamento válida, a UI mostra aviso no painel mensal e não calcula silenciosamente;
+- overrides mensais de extracto são persistidos em `credit_card_statement_overrides`;
+- override positivo ou zero substitui o automático; ausência de override usa automático; limpar o campo volta ao automático;
+- os controlos mensais de cartões ficam em caixas compactas imediatamente por baixo da tabela mensal, não na coluna lateral dos Débitos directos;
+- cada caixa de cartão mostra apenas nome do cartão, campo `Valor do extracto` e checkbox `Usar valor do extracto`;
+- checkbox desmarcada significa ausência de override e usa o cálculo automático;
+- checkbox marcada activa o campo, grava override mensal e permite valores positivos ou zero;
+- os autosaves de extractos têm debounce, confirmação visual e protecção contra respostas fora de ordem;
+- valores antigos de `budget_items`/`budget_allocations` para `credit_card_payments` são ignorados pelos cálculos actuais.
+
+Validações técnicas deste bloco:
+
+- `npm.cmd run lint` passou;
+- `npm.cmd run typecheck` passou;
+- testes focados de domínio, snapshots mensais e componente passaram com permissão elevada depois de o sandbox bloquear o Vitest/esbuild;
+- `npm.cmd test` completo passou com permissão elevada: 14 ficheiros e 106 testes;
+- `npm.cmd run build` passou;
+- `git diff --check` passou, apenas com avisos CRLF já esperados;
+- não foi criada migration nova;
+- não foi criado commit.
+
+Nota de ajuste de interface de Pagamentos de cartões em 25/06/2026:
+
+- o painel `Pagamentos de cartões do mês` foi removido da coluna lateral;
+- os cartões passaram para caixas compactas lado a lado por baixo da tabela mensal, com layout responsivo;
+- cada caixa mostra apenas nome, campo `Valor do extracto` e checkbox `Usar valor do extracto`;
+- a checkbox é agora o indicador explícito de existência de override mensal;
+- desmarcar limpa o override e regressa imediatamente ao automático;
+- marcar preenche inicialmente com o valor automático e deixa o campo editável;
+- valores negativos são bloqueados na UI;
+- a lógica Day to day não foi alterada;
+- `npm.cmd run lint` passou;
+- `npm.cmd run typecheck` passou;
+- `npm.cmd run build` passou;
+- `git diff --check` passou, apenas com avisos CRLF já esperados;
+- a repetição dos testes Vitest ficou bloqueada no ambiente Codex: no sandbox falhou com `Access denied` ao resolver `vitest.config.ts`, e a tentativa com permissão elevada foi recusada por limite automático de uso.
+
 ### 10.2 Problemas ainda existentes
 
 A Fase 2 não está concluída.
 
 Problemas confirmados:
 
-- os cálculos verticais por conta ainda não estão totalmente concluídos para previsões futuras;
-- os totais horizontais funcionam apenas parcialmente;
-- “Day to day” ainda não calcula o plafond diário;
-- algumas linhas calculadas futuras ainda poderão aparecer como inputs até serem automatizadas;
-- a tab Configurações ainda precisa de suportar o plafond diário e a conta associada;
+- validar manualmente no browser, contra Supabase real, a configuração e persistência de Day to day;
+- validar manualmente no browser, contra Supabase real, overrides de pagamentos de cartões, incluindo zero e limpeza para automático;
+- confirmar em browser que mudanças de mês preservam autosaves pendentes e usam o mês correcto;
+- continuar a validar totais horizontais e cartões superiores contra cenários reais com várias contas/cartões;
 - a tab Investimentos ainda não está implementada funcionalmente.
 
 Não avançar para a Fase 3 antes de concluir estes pontos.
@@ -508,13 +566,29 @@ Checklist mensal no Orçamento:
 
 ### 11.5 Day to day
 
-Existe um plafond diário inicial de:
+O plafond diário é configurável na tab Configurações.
+
+A UI sugere como valor inicial:
 
 ```text
 €50,00 por dia
 ```
 
-O valor deve ser configurável na tab Configurações e deve existir uma conta seleccionada para despesas quotidianas.
+Uma configuração só passa a contar depois de gravada em `daily_budget_versions`.
+
+Cada versão define:
+
+- plafond diário;
+- conta;
+- mês de entrada em vigor.
+
+Para um mês seleccionado, a aplicação usa a versão mais recente com:
+
+```text
+effective_from_month <= mês seleccionado
+```
+
+A conta pode ser qualquer conta activa. Não há filtragem por tipo de conta.
 
 Não distribuir o plafond por várias contas.
 
@@ -528,14 +602,16 @@ As despesas efectivas já devem estar reflectidas em Movimentos realizados.
 
 #### Mês actual
 
-Não incluir o dia actual.
+Incluir o dia actual.
 
 ```text
-Dias restantes = último dia do mês - data actual
-Day to day = dias restantes × plafond diário
+Dias considerados = último dia do mês - dia actual + 1
+Day to day = dias considerados × plafond diário
 ```
 
-Exemplo: se hoje for 25 de Junho, contar 26, 27, 28, 29 e 30.
+Exemplo: se hoje for 25 de Junho, contar 25, 26, 27, 28, 29 e 30.
+
+A data actual deve ser calculada em Europe/Lisbon. As funções de domínio aceitam uma data de referência explícita para testes.
 
 #### Mês futuro
 
@@ -548,15 +624,39 @@ Exemplos:
 - Julho com 31 dias: €1.550;
 - Setembro com 30 dias: €1.500.
 
-Se não existir conta seleccionada para Day to day, apresentar um aviso de configuração.
-
 A linha é apenas de leitura.
+
+Persistência e cálculo:
+
+- `daily_budget_versions` guarda a configuração;
+- o orçamento não grava esta linha em `budget_items`;
+- resíduos antigos de `budget_items` com `source_type = 'day_to_day'` são ignorados.
 
 ### 11.6 Pagamentos de cartões
 
-Mantém-se editável enquanto não existir um módulo automático próprio.
+Os pagamentos de cartões são semi-automáticos e apenas de leitura na tabela mensal.
 
-Os valores devem ser positivos e subtraídos pelas fórmulas.
+Cada cartão de crédito deve ter uma conta de pagamento associada em `accounts.linked_payment_account_id`.
+
+Valor automático por cartão:
+
+```text
+Pagamento automático = max(0, -Saldo actual do cartão)
+```
+
+Regras:
+
+- o cálculo usa o Saldo actual do cartão antes de previsões futuras;
+- a conta de pagamento recebe o valor negativo;
+- o cartão recebe o mesmo valor positivo;
+- o total da linha deve somar zero quando todos os cartões têm conta de pagamento válida;
+- se faltar conta de pagamento válida, apresentar aviso e não calcular silenciosamente esse cartão;
+- overrides mensais são guardados em `credit_card_statement_overrides`;
+- override positivo ou zero substitui o automático;
+- ausência de override usa o automático;
+- limpar o override volta ao automático;
+- zero é um override válido e diferente de ausência de override;
+- resíduos antigos de `budget_items` com `source_type = 'credit_card_payments'` são ignorados.
 
 ### 11.7 Salário
 
@@ -661,7 +761,7 @@ Os cartões devem reutilizar as mesmas funções centrais da tabela.
 Liquidez actual = Total do Saldo actual
 Liquidez final = Total do Saldo final
 Previsões = Despesas previstas - Entradas previstas antes do salário
-Dívida dos cartões = Total de Pagamentos de cartões
+Dívida dos cartões = soma dos saldos actuais negativos dos cartões
 Investimentos = valor automático do módulo de investimentos
 Património líquido = cálculo central de Net Assets
 ```
@@ -889,20 +989,20 @@ Testes mínimos da Fase 2:
 - saldo actual; **coberto como campo editável/manual**
 - saldo inicial transportado; **coberto**
 - débitos directos; **coberto por testes de domínio, integração mensal e componente**
-- Day to day para mês passado, actual e futuro;
-- conta correcta para Day to day;
+- Day to day para mês passado, actual e futuro; **coberto por testes de domínio e integração mensal**
+- conta correcta para Day to day; **coberto por testes de domínio e componente**
 - despesa personalizada; **coberto**
 - reembolso; **coberto**
 - linhas personalizadas sem selector de tipo; **coberto por testes de componente**
 - autosave da tabela mensal; **coberto por testes de componente**
-- subtotal antes do salário;
-- saldo final; **coberto com previsões personalizadas**
-- totais horizontais;
-- cartões coerentes;
+- subtotal antes do salário; **coberto com previsões personalizadas, Day to day, Débitos directos e Pagamentos de cartões**
+- saldo final; **coberto com previsões personalizadas, Day to day e Pagamentos de cartões**
+- totais horizontais; **coberto estruturalmente nas linhas automáticas e totais da tabela**
+- cartões coerentes; **coberto por testes de domínio, integração mensal e componente**
 - valores zero; **coberto**
 - persistência; **coberta estruturalmente via `budget_items`/`budget_allocations`; validar com Supabase real após migration**
 - recálculo após refresh;
-- linhas calculadas não editáveis; **coberto para Movimentos realizados**
+- linhas calculadas não editáveis; **coberto para Movimentos realizados, Débitos directos, Day to day e Pagamentos de cartões**
 - tabela compacta.
 
 ## 19. Comandos úteis
@@ -953,19 +1053,15 @@ Antes de alterar qualquer ficheiro, lê integralmente PROJECT_CONTEXT.md e inspe
 
 O próximo trabalho deve continuar exclusivamente na Fase 2:
 
-1. aplicar no Supabase as migrations incrementais pendentes, incluindo `20260701004000_budget_items_sort_order.sql`, `20260701005000_recurring_rules_direct_debits.sql` e `20260701006000_recurring_rule_month_states.sql`;
-2. validar Orçamento e Histórico contra o Supabase remoto/local real;
-3. validar Débitos directos contra o Supabase real depois da migration aplicada;
-4. implementar o plafond Day to day de €50;
-5. configurar a conta de Day to day;
-6. validar linhas personalizadas e autosave contra o Supabase real;
-7. corrigir cálculos verticais das previsões restantes;
-8. corrigir totais horizontais restantes;
-9. tornar futuras linhas calculadas não editáveis;
-10. actualizar cartões restantes;
-11. criar testes adicionais para as restantes regras;
-12. aplicar migrations necessárias;
-13. actualizar este ficheiro;
-14. criar commit Git.
+1. aplicar no Supabase quaisquer migrations incrementais ainda pendentes, se o ambiente real ainda não as tiver aplicado;
+2. validar Orçamento, Configurações, Débitos directos e Histórico contra o Supabase remoto/local real;
+3. gravar uma configuração Day to day e confirmar a linha automática em mês passado, mês actual e mês futuro;
+4. confirmar que a mudança de mês usa a versão Day to day correcta;
+5. validar Pagamentos de cartões com cartão ligado a conta de pagamento;
+6. validar override positivo, override zero e limpeza para automático;
+7. validar que cartão sem conta de pagamento mostra aviso e não altera saldos;
+8. validar refresh e mudança de mês depois de autosaves pendentes;
+9. criar commit Git se a validação manual for aprovada;
+10. só depois decidir o próximo bloco funcional da Fase 2.
 
-Não implementar Investimentos antes desta validação.
+Não implementar Investimentos antes desta validação e commit.

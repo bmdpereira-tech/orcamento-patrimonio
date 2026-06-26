@@ -23,6 +23,20 @@ const accounts: LiquidityAccount[] = [
     sortOrder: 20,
   },
 ];
+const creditCardAccounts: LiquidityAccount[] = [
+  accounts[0] as LiquidityAccount,
+  {
+    id: "cc-account-a",
+    name: "CC Conta A",
+    accountType: "credit_card",
+    isCreditCard: true,
+    linkedPaymentAccountId: "account-a",
+    startMonth: "2026-07",
+    showInBudget: true,
+    includeInNetWorth: true,
+    sortOrder: 30,
+  },
+];
 
 describe("monthly snapshots", () => {
   it("calculates realised movements as current balance minus initial balance", () => {
@@ -103,6 +117,108 @@ describe("monthly snapshots", () => {
 
     expect(snapshot?.directDebitsCents).toBe(-45_00);
     expect(snapshot?.finalBalanceCents).toBe(55_00);
+  });
+
+  it("includes automatic day-to-day source amounts in the final balance", () => {
+    const [snapshot] = buildSnapshotsForMonth({
+      month: "2026-07",
+      accounts,
+      states: [
+        {
+          accountId: "account-a",
+          month: "2026-07",
+          initialBalanceOverrideCents: 100_00,
+          currentBalanceOverrideCents: 100_00,
+        },
+      ],
+      sourceAmounts: new Map([[monthlySourceAmountKey("2026-07", "day_to_day", "account-a"), -50_00]]),
+    });
+
+    expect(snapshot?.dayToDayCents).toBe(-50_00);
+    expect(snapshot?.finalBalanceCents).toBe(50_00);
+  });
+
+  it("calculates credit card payments from current card debt as a zero-sum transfer", () => {
+    const snapshots = buildSnapshotsForMonth({
+      month: "2026-07",
+      accounts: creditCardAccounts,
+      states: [
+        {
+          accountId: "account-a",
+          month: "2026-07",
+          initialBalanceOverrideCents: 1_000_00,
+          currentBalanceOverrideCents: 1_000_00,
+        },
+        {
+          accountId: "cc-account-a",
+          month: "2026-07",
+          initialBalanceOverrideCents: 0,
+          currentBalanceOverrideCents: -125_00,
+        },
+      ],
+      sourceAmounts: new Map(),
+    });
+
+    expect(snapshots.find((snapshot) => snapshot.accountId === "account-a")?.creditCardPaymentsCents).toBe(-125_00);
+    expect(snapshots.find((snapshot) => snapshot.accountId === "cc-account-a")?.creditCardPaymentsCents).toBe(125_00);
+    expect(snapshots.reduce((total, snapshot) => total + snapshot.creditCardPaymentsCents, 0)).toBe(0);
+  });
+
+  it("uses statement overrides and distinguishes zero from absence", () => {
+    const automaticSnapshots = buildSnapshotsForMonth({
+      month: "2026-07",
+      accounts: creditCardAccounts,
+      states: [
+        {
+          accountId: "cc-account-a",
+          month: "2026-07",
+          initialBalanceOverrideCents: 0,
+          currentBalanceOverrideCents: -125_00,
+        },
+      ],
+      sourceAmounts: new Map(),
+    });
+    const zeroOverrideSnapshots = buildSnapshotsForMonth({
+      month: "2026-07",
+      accounts: creditCardAccounts,
+      states: [
+        {
+          accountId: "cc-account-a",
+          month: "2026-07",
+          initialBalanceOverrideCents: 0,
+          currentBalanceOverrideCents: -125_00,
+        },
+      ],
+      sourceAmounts: new Map(),
+      creditCardStatementOverrides: [
+        { creditCardAccountId: "cc-account-a", month: "2026-07", statementAmountCents: 0 },
+      ],
+    });
+
+    expect(automaticSnapshots.find((snapshot) => snapshot.accountId === "cc-account-a")?.creditCardPaymentsCents).toBe(125_00);
+    expect(zeroOverrideSnapshots.find((snapshot) => snapshot.accountId === "cc-account-a")?.creditCardPaymentsCents).toBe(0);
+  });
+
+  it("ignores legacy credit card payment source amounts", () => {
+    const snapshots = buildSnapshotsForMonth({
+      month: "2026-07",
+      accounts: creditCardAccounts,
+      states: [
+        {
+          accountId: "cc-account-a",
+          month: "2026-07",
+          initialBalanceOverrideCents: 0,
+          currentBalanceOverrideCents: 0,
+        },
+      ],
+      sourceAmounts: new Map([
+        [monthlySourceAmountKey("2026-07", "credit_card_payments", "account-a"), -500_00],
+        [monthlySourceAmountKey("2026-07", "credit_card_payments", "cc-account-a"), 500_00],
+      ]),
+    });
+
+    expect(snapshots.find((snapshot) => snapshot.accountId === "account-a")?.creditCardPaymentsCents).toBe(0);
+    expect(snapshots.find((snapshot) => snapshot.accountId === "cc-account-a")?.creditCardPaymentsCents).toBe(0);
   });
 
   it("keeps custom forecast lines isolated by month", () => {

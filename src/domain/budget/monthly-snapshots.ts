@@ -1,4 +1,9 @@
 import { getBudgetVisibleLiquidityAccounts, type LiquidityAccount } from "./accounts";
+import {
+  buildCreditCardPaymentAmountMap,
+  buildMonthlyCreditCardPayments,
+  type CreditCardStatementOverride,
+} from "./credit-card-payments";
 import { sumCents, type Cents } from "./money";
 import { addMonths, FIRST_MONTH, type MonthId } from "./months";
 import { getCustomBudgetItemSignedAmount, type MonthlyAccountSnapshot, type MonthlyCustomBudgetItem } from "./monthly-view";
@@ -75,12 +80,14 @@ export function buildSnapshotsForMonth({
   states,
   sourceAmounts,
   customItems = [],
+  creditCardStatementOverrides = [],
 }: {
   month: MonthId;
   accounts: readonly LiquidityAccount[];
   states: readonly AccountMonthState[];
   sourceAmounts: ReadonlyMap<string, Cents>;
   customItems?: readonly MonthlyCustomBudgetItem[];
+  creditCardStatementOverrides?: readonly CreditCardStatementOverride[];
 }) {
   const stateByMonthAccount = buildStateMap(states);
   const previousFinalByAccount = new Map<string, Cents>();
@@ -88,7 +95,7 @@ export function buildSnapshotsForMonth({
 
   for (const currentMonth of monthRangeUntil(month)) {
     const activeAccounts = getBudgetVisibleLiquidityAccounts(accounts, currentMonth);
-    const snapshotsForCurrentMonth = activeAccounts.map((account) => {
+    const baseSnapshotsForCurrentMonth = activeAccounts.map((account) => {
       const state = stateByMonthAccount.get(stateKey(currentMonth, account.id));
       const initialBalanceCents =
         currentMonth === FIRST_MONTH
@@ -98,22 +105,8 @@ export function buildSnapshotsForMonth({
       const realisedMovementsCents = calculateRealisedMovements(currentBalanceCents, initialBalanceCents);
       const directDebitsCents = getMonthlySourceAmount(sourceAmounts, currentMonth, "direct_debits", account.id);
       const dayToDayCents = getMonthlySourceAmount(sourceAmounts, currentMonth, "day_to_day", account.id);
-      const creditCardPaymentsCents = getMonthlySourceAmount(
-        sourceAmounts,
-        currentMonth,
-        "credit_card_payments",
-        account.id,
-      );
       const manualForecastsCents = getCustomForecastAmount(customItems, currentMonth, account.id);
-      const subtotalBeforeSalaryCents = sumCents([
-        currentBalanceCents,
-        directDebitsCents,
-        dayToDayCents,
-        creditCardPaymentsCents,
-        manualForecastsCents,
-      ]);
       const salaryCents = getMonthlySourceAmount(sourceAmounts, currentMonth, "salary", account.id);
-      const finalBalanceCents = sumCents([subtotalBeforeSalaryCents, salaryCents]);
 
       return {
         accountId: account.id,
@@ -122,11 +115,35 @@ export function buildSnapshotsForMonth({
         currentBalanceCents,
         directDebitsCents,
         dayToDayCents,
-        creditCardPaymentsCents,
+        creditCardPaymentsCents: 0,
         manualForecastsCents,
-        subtotalBeforeSalaryCents,
+        subtotalBeforeSalaryCents: 0,
         salaryCents,
-        finalBalanceCents,
+        finalBalanceCents: 0,
+      };
+    });
+    const creditCardPayments = buildMonthlyCreditCardPayments({
+      accounts: activeAccounts,
+      snapshots: baseSnapshotsForCurrentMonth,
+      month: currentMonth,
+      overrides: creditCardStatementOverrides,
+    });
+    const creditCardPaymentAmountsByAccount = buildCreditCardPaymentAmountMap(creditCardPayments);
+    const snapshotsForCurrentMonth = baseSnapshotsForCurrentMonth.map((snapshot): MonthlyAccountSnapshot => {
+      const creditCardPaymentsCents = creditCardPaymentAmountsByAccount.get(snapshot.accountId) ?? 0;
+      const subtotalBeforeSalaryCents = sumCents([
+        snapshot.currentBalanceCents,
+        snapshot.directDebitsCents,
+        snapshot.dayToDayCents,
+        creditCardPaymentsCents,
+        snapshot.manualForecastsCents,
+      ]);
+
+      return {
+        ...snapshot,
+        creditCardPaymentsCents,
+        subtotalBeforeSalaryCents,
+        finalBalanceCents: sumCents([subtotalBeforeSalaryCents, snapshot.salaryCents]),
       };
     });
 

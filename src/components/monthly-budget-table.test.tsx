@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LiquidityAccount } from "../domain/budget/accounts";
-import type { Cents } from "../domain/budget/money";
+import type { MonthlyCreditCardPayment } from "../domain/budget/credit-card-payments";
+import { parseEuroCents, type Cents } from "../domain/budget/money";
 import type { MonthId } from "../domain/budget/months";
 import {
   buildBudgetOverview,
@@ -27,6 +28,7 @@ const creditCardAccount: LiquidityAccount = {
   shortName: "CC Santander",
   accountType: "credit_card",
   isCreditCard: true,
+  linkedPaymentAccountId: "account-a",
   startMonth: "2026-07",
   showInBudget: true,
   includeInNetWorth: true,
@@ -86,14 +88,20 @@ function expectCheckboxChecked(element: HTMLElement, checked: boolean) {
 
 function createOverview({
   currentBalanceCents = 75_00,
+  currentBalanceByAccountId = {},
   directDebitsCents = 0,
+  dayToDayCents = 0,
+  creditCardPayments = [],
   customItems = [],
   overviewAccounts = accounts,
   occurrences = [],
   month = "2026-07",
 }: {
   currentBalanceCents?: Cents;
+  currentBalanceByAccountId?: Partial<Record<string, Cents>>;
   directDebitsCents?: Cents;
+  dayToDayCents?: Cents;
+  creditCardPayments?: MonthlyCreditCardPayment[];
   customItems?: MonthlyCustomBudgetItem[];
   overviewAccounts?: LiquidityAccount[];
   occurrences?: MonthlyDirectDebitOccurrence[];
@@ -106,14 +114,26 @@ function createOverview({
     snapshots: overviewAccounts.map((account) => ({
         ...createEmptySnapshot(account.id),
         initialBalanceCents: 100_00,
-        realisedMovementsCents: currentBalanceCents - 100_00,
-        currentBalanceCents,
-        directDebitsCents: account.id === "account-a" ? directDebitsCents : 0,
-        subtotalBeforeSalaryCents: currentBalanceCents + (account.id === "account-a" ? directDebitsCents : 0),
-        finalBalanceCents: currentBalanceCents + (account.id === "account-a" ? directDebitsCents : 0),
-      })),
+        ...(() => {
+          const accountCurrentBalanceCents = currentBalanceByAccountId[account.id] ?? currentBalanceCents;
+          const accountDirectDebitsCents = account.id === "account-a" ? directDebitsCents : 0;
+          const accountDayToDayCents = account.id === "account-a" ? dayToDayCents : 0;
+
+          return {
+            realisedMovementsCents: accountCurrentBalanceCents - 100_00,
+            currentBalanceCents: accountCurrentBalanceCents,
+            directDebitsCents: accountDirectDebitsCents,
+            dayToDayCents: accountDayToDayCents,
+            subtotalBeforeSalaryCents:
+              accountCurrentBalanceCents + accountDirectDebitsCents + accountDayToDayCents,
+            finalBalanceCents:
+              accountCurrentBalanceCents + accountDirectDebitsCents + accountDayToDayCents,
+          };
+        })(),
+    })),
     customItems,
     directDebitOccurrences: occurrences,
+    creditCardPayments,
   });
 }
 
@@ -142,6 +162,254 @@ describe("MonthlyBudgetTable", () => {
     render(<MonthlyBudgetTable overview={createOverview({ directDebitsCents: 0 })} editable />);
 
     expect(within(screen.getByRole("row", { name: /Débitos directos/ })).getAllByText("–").length).toBeGreaterThan(0);
+  });
+
+  it("renders day-to-day and credit card payments as read-only automatic lines", () => {
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          overviewAccounts: [accountA, creditCardAccount],
+          currentBalanceByAccountId: {
+            "account-a": 1_000_00,
+            "cc-santander": -125_00,
+          },
+          dayToDayCents: -50_00,
+        })}
+        editable
+      />,
+    );
+
+    expect(screen.queryByLabelText("Day to day — Conta A")).toBeNull();
+    expect(screen.queryByLabelText("Pagamentos de cartões — Conta A")).toBeNull();
+    expect(within(screen.getByRole("row", { name: /Day to day/ })).getAllByText("(50,00 €)").length).toBeGreaterThan(0);
+    expect(within(screen.getByRole("row", { name: /Pagamentos de cartões/ })).getByText("(125,00 €)")).toBeTruthy();
+    expect(within(screen.getByRole("row", { name: /Pagamentos de cartões/ })).getByText("125,00 €")).toBeTruthy();
+    expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("825,00 €").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("heading", { name: "Pagamentos de cartões do mês" })).toBeNull();
+    expectCheckboxChecked(screen.getByLabelText("Usar valor do extracto — CC Santander"), false);
+    expect((screen.getByLabelText("Valor do extracto — CC Santander") as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("enables, updates and autosaves a credit card statement override in a future month", async () => {
+    vi.useFakeTimers();
+    const setCreditCardStatementOverrideAction = vi.fn(async (formData: FormData) => ({
+      ok: true as const,
+      override: {
+        creditCardAccountId: String(formData.get("creditCardAccountId")),
+        month: String(formData.get("month")),
+        statementAmountCents: parseEuroCents(formData.get("statementAmount")),
+      },
+    }));
+
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          month: "2026-12",
+          overviewAccounts: [accountA, creditCardAccount],
+          currentBalanceByAccountId: {
+            "account-a": 1_000_00,
+            "cc-santander": -125_00,
+          },
+        })}
+        editable
+        setCreditCardStatementOverrideAction={setCreditCardStatementOverrideAction}
+      />,
+    );
+
+    const overrideInput = screen.getByLabelText("Valor do extracto — CC Santander") as HTMLInputElement;
+    const overrideCheckbox = screen.getByLabelText("Usar valor do extracto — CC Santander");
+
+    expect(overrideInput.disabled).toBe(true);
+    fireEvent.click(overrideCheckbox);
+
+    expectCheckboxChecked(overrideCheckbox, true);
+    expect(overrideInput.disabled).toBe(false);
+    expect(overrideInput.value).toBe("125,00");
+    expect(setCreditCardStatementOverrideAction).toHaveBeenCalledTimes(1);
+    expect((setCreditCardStatementOverrideAction.mock.calls[0]?.[0] as FormData).get("month")).toBe("2026-12");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    setCreditCardStatementOverrideAction.mockClear();
+    fireEvent.change(overrideInput, {
+      target: { value: "80,00" },
+    });
+
+    expect(within(screen.getByRole("row", { name: /Pagamentos de cartões/ })).getByText("(80,00 €)")).toBeTruthy();
+    expect(within(screen.getByRole("row", { name: /Pagamentos de cartões/ })).getByText("80,00 €")).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(650);
+    });
+
+    expect(setCreditCardStatementOverrideAction).toHaveBeenCalledTimes(1);
+    expect((setCreditCardStatementOverrideAction.mock.calls[0]?.[0] as FormData).get("creditCardAccountId")).toBe(
+      "cc-santander",
+    );
+    expect((setCreditCardStatementOverrideAction.mock.calls[0]?.[0] as FormData).get("month")).toBe("2026-12");
+    expect((setCreditCardStatementOverrideAction.mock.calls[0]?.[0] as FormData).get("statementAmount")).toBe(
+      "80,00",
+    );
+  });
+
+  it("does not accept negative credit card statement overrides", async () => {
+    vi.useFakeTimers();
+    const setCreditCardStatementOverrideAction = vi.fn(async (formData: FormData) => ({
+      ok: true as const,
+      override: {
+        creditCardAccountId: String(formData.get("creditCardAccountId")),
+        month: String(formData.get("month")),
+        statementAmountCents: parseEuroCents(formData.get("statementAmount")),
+      },
+    }));
+
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          overviewAccounts: [accountA, creditCardAccount],
+          currentBalanceByAccountId: {
+            "account-a": 1_000_00,
+            "cc-santander": -125_00,
+          },
+        })}
+        editable
+        setCreditCardStatementOverrideAction={setCreditCardStatementOverrideAction}
+      />,
+    );
+
+    const overrideInput = screen.getByLabelText("Valor do extracto — CC Santander") as HTMLInputElement;
+    fireEvent.click(screen.getByLabelText("Usar valor do extracto — CC Santander"));
+    expect(setCreditCardStatementOverrideAction).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    setCreditCardStatementOverrideAction.mockClear();
+
+    fireEvent.change(overrideInput, { target: { value: "-10,00" } });
+
+    expect(overrideInput.value).toBe("125,00");
+    expect(screen.getByText("O valor do extracto não pode ser negativo.")).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(650);
+    });
+    expect(setCreditCardStatementOverrideAction).not.toHaveBeenCalled();
+  });
+
+  it("loads a persisted card override and keeps another month automatic", () => {
+    const persistedOverride: MonthlyCreditCardPayment = {
+      month: "2026-07",
+      creditCardAccountId: "cc-santander",
+      creditCardName: "CC Santander",
+      paymentAccountId: "account-a",
+      paymentAccountName: "Conta A",
+      currentBalanceCents: -125_00,
+      automaticPaymentCents: 125_00,
+      overrideAmountCents: 80_00,
+      paymentAmountCents: 80_00,
+      usesOverride: true,
+    };
+    const { rerender } = render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          overviewAccounts: [accountA, creditCardAccount],
+          currentBalanceByAccountId: {
+            "account-a": 1_000_00,
+            "cc-santander": -125_00,
+          },
+          creditCardPayments: [persistedOverride],
+        })}
+        editable
+      />,
+    );
+
+    expectCheckboxChecked(screen.getByLabelText("Usar valor do extracto — CC Santander"), true);
+    expect((screen.getByLabelText("Valor do extracto — CC Santander") as HTMLInputElement).value).toBe("80,00");
+    expect(within(screen.getByRole("row", { name: /Pagamentos de cartões/ })).getByText("(80,00 €)")).toBeTruthy();
+
+    rerender(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          month: "2026-08",
+          overviewAccounts: [accountA, creditCardAccount],
+          currentBalanceByAccountId: {
+            "account-a": 1_000_00,
+            "cc-santander": -125_00,
+          },
+        })}
+        editable
+      />,
+    );
+
+    expectCheckboxChecked(screen.getByLabelText("Usar valor do extracto — CC Santander"), false);
+    expect((screen.getByLabelText("Valor do extracto — CC Santander") as HTMLInputElement).disabled).toBe(true);
+    expect(within(screen.getByRole("row", { name: /Pagamentos de cartões/ })).getByText("(125,00 €)")).toBeTruthy();
+  });
+
+  it("treats a zero credit card override as a saved value and clearing returns to automatic", async () => {
+    const setCreditCardStatementOverrideAction = vi.fn(async (formData: FormData) => ({
+      ok: true as const,
+      override: {
+        creditCardAccountId: String(formData.get("creditCardAccountId")),
+        month: String(formData.get("month")),
+        statementAmountCents: String(formData.get("statementAmount")).trim() === "" ? null : 0,
+      },
+    }));
+
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          overviewAccounts: [accountA, creditCardAccount],
+          currentBalanceByAccountId: {
+            "account-a": 1_000_00,
+            "cc-santander": -125_00,
+          },
+        })}
+        editable
+        setCreditCardStatementOverrideAction={setCreditCardStatementOverrideAction}
+      />,
+    );
+
+    const overrideInput = screen.getByLabelText("Valor do extracto — CC Santander");
+    const overrideCheckbox = screen.getByLabelText("Usar valor do extracto — CC Santander");
+    fireEvent.click(overrideCheckbox);
+    await waitFor(() => expect(setCreditCardStatementOverrideAction).toHaveBeenCalledTimes(1));
+    setCreditCardStatementOverrideAction.mockClear();
+
+    fireEvent.change(overrideInput, { target: { value: "0,00" } });
+    fireEvent.blur(overrideInput);
+
+    expect(within(screen.getByRole("row", { name: /Pagamentos de cartões/ })).getAllByText("–").length).toBeGreaterThan(0);
+    await waitFor(() => expect(setCreditCardStatementOverrideAction).toHaveBeenCalledTimes(1));
+    expect((setCreditCardStatementOverrideAction.mock.calls[0]?.[0] as FormData).get("statementAmount")).toBe(
+      "0,00",
+    );
+
+    fireEvent.click(overrideCheckbox);
+
+    expect(within(screen.getByRole("row", { name: /Pagamentos de cartões/ })).getByText("(125,00 €)")).toBeTruthy();
+    await waitFor(() => expect(setCreditCardStatementOverrideAction).toHaveBeenCalledTimes(2));
+    expect((setCreditCardStatementOverrideAction.mock.calls[1]?.[0] as FormData).get("statementAmount")).toBe("");
+  });
+
+  it("disables card override controls without a linked payment account", () => {
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          overviewAccounts: [accountA, { ...creditCardAccount, linkedPaymentAccountId: undefined }],
+          currentBalanceByAccountId: {
+            "account-a": 1_000_00,
+            "cc-santander": -125_00,
+          },
+        })}
+        editable
+      />,
+    );
+
+    expect((screen.getByLabelText("Valor do extracto — CC Santander") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Usar valor do extracto — CC Santander") as HTMLInputElement).disabled).toBe(true);
+    expect(within(screen.getByRole("row", { name: /Pagamentos de cartões/ })).getAllByText("–").length).toBeGreaterThan(0);
   });
 
   it("lists applicable monthly direct debits grouped by account and sorted by amount", () => {

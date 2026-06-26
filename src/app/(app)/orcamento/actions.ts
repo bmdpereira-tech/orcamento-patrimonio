@@ -14,6 +14,10 @@ import {
   saveMonthlyBudgetValues,
   type CustomBudgetItemSaveInput,
 } from "@/server/budget/monthly-overview";
+import {
+  clearCreditCardStatementOverride,
+  setCreditCardStatementOverride,
+} from "@/server/budget/credit-card-payments";
 import { setRecurringRuleMonthExcluded } from "@/server/budget/recurring-rules";
 
 type BudgetActionResult = { ok: true } | { ok: false; error: string };
@@ -25,6 +29,16 @@ type DirectDebitExclusionActionResult =
         recurringRuleId: string;
         month: string;
         excludedFromForecast: boolean;
+      };
+    }
+  | { ok: false; error: string };
+type CreditCardStatementOverrideActionResult =
+  | {
+      ok: true;
+      override: {
+        creditCardAccountId: string;
+        month: string;
+        statementAmountCents: number | null;
       };
     }
   | { ok: false; error: string };
@@ -142,6 +156,50 @@ export async function setDirectDebitForecastExclusionAction(
     return { ok: true, state };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Não foi possível actualizar a previsão.";
+    return { ok: false, error: message };
+  }
+}
+
+export async function setCreditCardStatementOverrideAction(
+  formData: FormData,
+): Promise<CreditCardStatementOverrideActionResult> {
+  const creditCardAccountId = String(formData.get("creditCardAccountId") ?? "").trim();
+  const month = normaliseMonth(String(formData.get("month") ?? ""));
+  const rawStatementAmount = String(formData.get("statementAmount") ?? "").trim();
+
+  try {
+    if (!creditCardAccountId) {
+      throw new Error("Cartão inválido.");
+    }
+
+    if (!rawStatementAmount) {
+      await clearCreditCardStatementOverride({ creditCardAccountId, month });
+      revalidatePath("/orcamento");
+
+      return {
+        ok: true,
+        override: { creditCardAccountId, month, statementAmountCents: null },
+      };
+    }
+
+    const statementAmountCents = parseEuroCents(rawStatementAmount);
+    const override = await setCreditCardStatementOverride({
+      creditCardAccountId,
+      month,
+      statementAmountCents,
+    });
+
+    revalidatePath("/orcamento");
+    return {
+      ok: true,
+      override: {
+        creditCardAccountId: override.creditCardAccountId,
+        month: override.month,
+        statementAmountCents: override.statementAmountCents,
+      },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Não foi possível guardar o valor do extracto.";
     return { ok: false, error: message };
   }
 }

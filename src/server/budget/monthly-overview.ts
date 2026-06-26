@@ -7,6 +7,13 @@ import {
   getBudgetVisibleLiquidityAccounts,
   type InvestmentAsset,
 } from "@/domain/budget/accounts";
+import {
+  buildMonthlyCreditCardPayments,
+} from "@/domain/budget/credit-card-payments";
+import {
+  buildDailyBudgetSourceAmountMap,
+  calculateDailyBudgetForecast,
+} from "@/domain/budget/daily-budget";
 import { assertCents, type Cents } from "@/domain/budget/money";
 import { FIRST_MONTH, toMonthStartDate, type MonthId } from "@/domain/budget/months";
 import {
@@ -30,6 +37,8 @@ import {
 } from "@/domain/budget/monthly-view";
 import { createSupabaseAdminClient } from "@/server/supabase/client";
 import { listManagedAccounts } from "./accounts";
+import { listCreditCardStatementOverridesUntil } from "./credit-card-payments";
+import { listDailyBudgetVersionsUntil } from "./daily-budget";
 import { listRecurringRuleMonthStatesUntil, listRecurringRules } from "./recurring-rules";
 
 type AccountMonthStateRow = {
@@ -236,7 +245,13 @@ function buildSourceAmountMap(items: readonly BudgetItemRow[], allocations: read
   for (const allocation of allocations) {
     const item = itemById.get(allocation.budget_item_id);
 
-    if (!item || !isMonthlySystemSourceType(item.source_type) || item.source_type === "direct_debits") {
+    if (
+      !item ||
+      !isMonthlySystemSourceType(item.source_type) ||
+      item.source_type === "direct_debits" ||
+      item.source_type === "day_to_day" ||
+      item.source_type === "credit_card_payments"
+    ) {
       continue;
     }
 
@@ -277,25 +292,49 @@ function buildCustomBudgetItems(items: readonly BudgetItemRow[], allocations: re
     });
 }
 
-export async function getSupabaseBudgetOverview(month: MonthId): Promise<BudgetOverview> {
+export async function getSupabaseBudgetOverview(
+  month: MonthId,
+  { referenceDate = new Date() }: { referenceDate?: Date } = {},
+): Promise<BudgetOverview> {
   const client = createSupabaseAdminClient();
-  const [accounts, states, budgetData, investmentAssets, recurringRules, recurringRuleMonthStates] = await Promise.all([
+  const [
+    accounts,
+    states,
+    budgetData,
+    investmentAssets,
+    recurringRules,
+    recurringRuleMonthStates,
+    dailyBudgetVersions,
+    creditCardStatementOverrides,
+  ] = await Promise.all([
     listManagedAccounts(client),
     fetchAccountMonthStates(client, month),
     fetchBudgetItems(client, month),
     fetchInvestmentAssets(client, month),
     listRecurringRules(client),
     listRecurringRuleMonthStatesUntil(month, client),
+    listDailyBudgetVersionsUntil(month, client),
+    listCreditCardStatementOverridesUntil(month, client),
   ]);
   const activeAccounts = getBudgetVisibleLiquidityAccounts(accounts, month);
   const sourceAmounts = buildSourceAmountMap(budgetData.items, budgetData.allocations);
+  const months = monthRangeUntil(month);
   const recurringDebitAmounts = buildRecurringDebitSourceAmountMap(
     recurringRules,
-    monthRangeUntil(month),
+    months,
     recurringRuleMonthStates,
   );
+  const dailyBudgetAmounts = buildDailyBudgetSourceAmountMap({
+    versions: dailyBudgetVersions,
+    months,
+    referenceDate,
+  });
 
   for (const [key, amountCents] of recurringDebitAmounts) {
+    sourceAmounts.set(key, amountCents);
+  }
+
+  for (const [key, amountCents] of dailyBudgetAmounts) {
     sourceAmounts.set(key, amountCents);
   }
 
@@ -314,7 +353,26 @@ export async function getSupabaseBudgetOverview(month: MonthId): Promise<BudgetO
     };
   });
   const customItems = buildCustomBudgetItems(budgetData.items, budgetData.allocations);
-  const snapshots = buildSnapshotsForMonth({ month, accounts, states, sourceAmounts, customItems });
+  const snapshots = buildSnapshotsForMonth({
+    month,
+    accounts,
+    states,
+    sourceAmounts,
+    customItems,
+    creditCardStatementOverrides,
+  });
+  const dailyBudgetForecast = calculateDailyBudgetForecast({
+    versions: dailyBudgetVersions,
+    accounts,
+    month,
+    referenceDate,
+  });
+  const creditCardPayments = buildMonthlyCreditCardPayments({
+    accounts: activeAccounts,
+    snapshots,
+    month,
+    overrides: creditCardStatementOverrides,
+  });
   const selectedCustomItems = customItems.filter((item) => item.month === month);
 
   return buildBudgetOverview({
@@ -324,6 +382,8 @@ export async function getSupabaseBudgetOverview(month: MonthId): Promise<BudgetO
     snapshots,
     customItems: selectedCustomItems,
     directDebitOccurrences,
+    dailyBudgetForecast,
+    creditCardPayments,
   });
 }
 

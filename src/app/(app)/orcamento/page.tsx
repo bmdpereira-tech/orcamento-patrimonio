@@ -10,6 +10,7 @@ import {
   addCustomBudgetItemAction,
   deleteCustomBudgetItemAction,
   saveMonthlyBudgetAction,
+  setCreditCardStatementOverrideAction,
   setDirectDebitForecastExclusionAction,
 } from "./actions";
 
@@ -155,6 +156,7 @@ export default async function BudgetPage({ searchParams }: BudgetPageProps) {
             addCustomItemAction={addCustomBudgetItemAction}
             deleteCustomItemAction={deleteCustomBudgetItemAction}
             setDirectDebitExcludedAction={setDirectDebitForecastExclusionAction}
+            setCreditCardStatementOverrideAction={setCreditCardStatementOverrideAction}
           />
         </>
       ) : null}
