@@ -554,15 +554,33 @@ Validações técnicas desta correcção:
 - `git diff --check` passou, apenas com avisos CRLF já esperados;
 - `npm.cmd test` voltou a ficar bloqueado no sandbox pelo erro conhecido do Vitest/esbuild ao ler `vitest.config.ts` na pasta OneDrive (`Access is denied`).
 
+Nota da revisão integral da Fase 2 em 26/06/2026:
+
+- foi revista a implementação actual de fórmulas mensais, previsões, estados mensais, autosave, protecção histórica, histórico, contas e resíduos de código antigo;
+- `getMonthIdForDate` passou a derivar o mês em `Europe/Lisbon`, evitando diferenças quando o runtime usa outro fuso horário;
+- a página Orçamento sem parâmetro `month` passou a abrir o mês actual em `Europe/Lisbon`; o atalho `Mês actual` também aponta para esse mês e não para Julho de 2026;
+- foram removidos textos de UI obsoletos relacionados com o aviso amarelo do primeiro mês e botões/campos antigos já não renderizados;
+- a persistência da tabela mensal deixou de conter código morto que tentava manter linhas automáticas antigas em `budget_items`; resíduos antigos com `source_type` automático continuam ignorados pelos cálculos;
+- contas sem visibilidade financeira (`showInBudget = false` e `includeInNetWorth = false`) deixam de pedir confirmação histórica ao arquivar/reactivar/eliminar quando não afectam saldos;
+- alterações de estado de Débitos directos que não mudam efectivamente o estado financeiro deixam de pedir confirmação histórica;
+- não foi criada migration nova.
+
+Validações técnicas desta revisão:
+
+- `npm.cmd run lint` passou;
+- `npm.cmd run typecheck` passou;
+- `npm.cmd test` passou com permissão elevada: 20 ficheiros e 155 testes;
+- `npm.cmd run build` passou;
+- `git diff --check` passou, apenas com avisos CRLF já esperados.
+
 ### 10.2 Problemas ainda existentes
 
-A Fase 2 não está concluída.
+A Fase 2 aguarda validação manual desta revisão antes de commit.
 
 Problemas confirmados:
 
-- aplicar as migrations `20260701007000_salary_versions_allow_subsidies.sql` e `20260701008000_account_month_realised_movements.sql` no Supabase antes de usar os blocos correspondentes contra uma base remota que ainda não as tenha recebido;
+- validar manualmente no browser as correcções desta revisão integral;
 - validar manualmente no browser a protecção de alterações históricas assim que existirem meses anteriores utilizáveis;
-- repetir localmente `npm.cmd test`, porque o ambiente Codex voltou a bloquear o Vitest/esbuild no sandbox e recusou a execução elevada;
 - confirmar em browser que mudanças de mês preservam autosaves pendentes e usam o mês correcto;
 - continuar a validar totais horizontais e cartões superiores contra cenários reais com várias contas/cartões;
 - a tab Investimentos ainda não está implementada funcionalmente.
@@ -1222,11 +1240,12 @@ Antes de alterar qualquer ficheiro, lê integralmente PROJECT_CONTEXT.md e inspe
 
 O próximo trabalho deve continuar exclusivamente na Fase 2:
 
-1. repetir localmente `npm.cmd test`, porque o ambiente Codex bloqueou a execução completa;
-2. validar no browser que alterações no mês actual e em meses futuros não abrem modal;
-3. quando existirem meses anteriores utilizáveis, validar que alterações financeiras históricas abrem o modal e que `Cancelar` não grava;
-4. validar que `Aplicar alteração` grava e recalcula os meses seguintes;
-5. validar que alterações apenas de descrição, nome ou ordem visual não disparam alerta;
-6. confirmar que os autosaves pendentes ficam suspensos enquanto o modal está aberto;
-7. criar commit Git se a validação manual for aprovada;
-8. só depois decidir o próximo bloco funcional da Fase 2, sem avançar para Investimentos antes da validação/commit.
+1. validar no browser a revisão integral da Fase 2: fórmulas mensais, estados mensais, autosave, Débitos directos, Day to day, cartões, Salário, Histórico e Contas;
+2. confirmar que a página Orçamento sem parâmetro abre o mês actual em `Europe/Lisbon` e que `Mês actual` aponta para esse mês;
+3. validar que alterações no mês actual e em meses futuros não abrem modal;
+4. quando existirem meses anteriores utilizáveis, validar que alterações financeiras históricas abrem o modal e que `Cancelar` não grava;
+5. validar que `Aplicar alteração` grava e recalcula os meses seguintes;
+6. validar que alterações apenas de descrição, nome ou ordem visual não disparam alerta;
+7. confirmar que os autosaves pendentes ficam suspensos enquanto o modal está aberto;
+8. criar commit Git se a validação manual for aprovada;
+9. só depois iniciar Investimentos.

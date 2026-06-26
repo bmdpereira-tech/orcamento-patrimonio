@@ -920,9 +920,12 @@ describe("MonthlyBudgetTable", () => {
 
     const input = screen.getByLabelText("Movimentos realizados — Conta A") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "80,00" } });
-    fireEvent.blur(input);
+    await act(async () => {
+      fireEvent.blur(input);
+      await vi.runOnlyPendingTimersAsync();
+    });
 
-    await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+    expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.getByText(historicalImpactResult().message)).toBeTruthy();
     expect(saveBudgetAction).toHaveBeenCalledTimes(1);
 

@@ -33,9 +33,7 @@ import {
 } from "@/domain/budget/monthly-snapshots";
 import {
   buildBudgetOverview,
-  EDITABLE_BUDGET_ROW_KEYS,
   type BudgetOverview,
-  type BudgetRowKey,
   type EditableBudgetRowKey,
   type MonthlyCustomBudgetItem,
 } from "@/domain/budget/monthly-view";
@@ -83,20 +81,6 @@ type InvestmentMonthValueRow = {
   value_cents: number;
 };
 
-export type SystemBudgetSourceType =
-  | "direct_debits"
-  | "day_to_day"
-  | "credit_card_payments"
-  | "salary";
-
-export type SystemBudgetDefinition = {
-  rowKey: BudgetRowKey;
-  sourceType: SystemBudgetSourceType;
-  description: string;
-  category: "expense" | "income" | "transfer" | "credit_card_payment" | "investment" | "other";
-  status: "planned" | "done" | "cancelled";
-};
-
 export type CustomBudgetItemSaveInput = {
   id: string;
   description: string;
@@ -104,51 +88,15 @@ export type CustomBudgetItemSaveInput = {
   valuesByAccountId: Record<string, Cents>;
 };
 
-export const SYSTEM_BUDGET_DEFINITIONS: readonly SystemBudgetDefinition[] = [
-  {
-    rowKey: "direct-debits",
-    sourceType: "direct_debits",
-    description: "Débitos directos",
-    category: "expense",
-    status: "planned",
-  },
-  {
-    rowKey: "day-to-day",
-    sourceType: "day_to_day",
-    description: "Day to day",
-    category: "expense",
-    status: "planned",
-  },
-  {
-    rowKey: "credit-card-payments",
-    sourceType: "credit_card_payments",
-    description: "Pagamentos de cartões",
-    category: "credit_card_payment",
-    status: "planned",
-  },
-  {
-    rowKey: "salary",
-    sourceType: "salary",
-    description: "Salário",
-    category: "income",
-    status: "planned",
-  },
+const IGNORED_AUTOMATIC_SOURCE_TYPES: readonly MonthlySystemSourceType[] = [
+  "direct_debits",
+  "day_to_day",
+  "credit_card_payments",
+  "salary",
 ];
 
-const SYSTEM_SOURCE_TYPES = SYSTEM_BUDGET_DEFINITIONS.map((definition) => definition.sourceType);
-
-export function isSystemEditableRowKey(rowKey: BudgetRowKey): rowKey is EditableBudgetRowKey {
-  return EDITABLE_BUDGET_ROW_KEYS.some((editableRowKey) => editableRowKey === rowKey);
-}
-
-function isPersistedSystemBudgetDefinition(
-  definition: SystemBudgetDefinition,
-): definition is SystemBudgetDefinition & { rowKey: EditableBudgetRowKey } {
-  return EDITABLE_BUDGET_ROW_KEYS.some((rowKey) => rowKey === definition.rowKey);
-}
-
 function isMonthlySystemSourceType(sourceType: string): sourceType is MonthlySystemSourceType {
-  return SYSTEM_SOURCE_TYPES.some((systemSourceType) => systemSourceType === sourceType);
+  return IGNORED_AUTOMATIC_SOURCE_TYPES.some((systemSourceType) => systemSourceType === sourceType);
 }
 
 async function fetchAccountMonthStates(client: SupabaseClient, month: MonthId) {
@@ -258,10 +206,7 @@ function buildSourceAmountMap(items: readonly BudgetItemRow[], allocations: read
     if (
       !item ||
       !isMonthlySystemSourceType(item.source_type) ||
-      item.source_type === "direct_debits" ||
-      item.source_type === "day_to_day" ||
-      item.source_type === "credit_card_payments" ||
-      item.source_type === "salary"
+      IGNORED_AUTOMATIC_SOURCE_TYPES.includes(item.source_type)
     ) {
       continue;
     }
@@ -520,63 +465,6 @@ export async function getMonthlyBudgetFinancialChangeMonth({
   return null;
 }
 
-async function ensureSystemBudgetItem(
-  client: SupabaseClient,
-  month: MonthId,
-  definition: SystemBudgetDefinition,
-) {
-  const monthDate = toMonthStartDate(month);
-  const { data: existingRows, error: selectError } = await client
-    .from("budget_items")
-    .select("id")
-    .eq("month", monthDate)
-    .eq("source_type", definition.sourceType)
-    .limit(1);
-
-  if (selectError) {
-    throw new Error(`Não foi possível procurar a linha "${definition.description}": ${selectError.message}`);
-  }
-
-  const existing = existingRows?.[0] as { id: string } | undefined;
-
-  if (existing) {
-    const { error: updateError } = await client
-      .from("budget_items")
-      .update({
-        description: definition.description,
-        category: definition.category,
-        status: definition.status,
-        sort_order: 0,
-      })
-      .eq("id", existing.id);
-
-    if (updateError) {
-      throw new Error(`Não foi possível actualizar a linha "${definition.description}": ${updateError.message}`);
-    }
-
-    return existing.id;
-  }
-
-  const { data: inserted, error: insertError } = await client
-    .from("budget_items")
-    .insert({
-      month: monthDate,
-      description: definition.description,
-      category: definition.category,
-      status: definition.status,
-      source_type: definition.sourceType,
-      sort_order: 0,
-    })
-    .select("id")
-    .single();
-
-  if (insertError) {
-    throw new Error(`Não foi possível criar a linha "${definition.description}": ${insertError.message}`);
-  }
-
-  return (inserted as { id: string }).id;
-}
-
 export async function saveMonthlyBudgetValues({
   month,
   values,
@@ -620,27 +508,6 @@ export async function saveMonthlyBudgetValues({
 
     if (error) {
       throw new Error(`Não foi possível guardar os saldos mensais: ${error.message}`);
-    }
-  }
-
-  for (const definition of SYSTEM_BUDGET_DEFINITIONS.filter(isPersistedSystemBudgetDefinition)) {
-    const budgetItemId = await ensureSystemBudgetItem(client, month, definition);
-    const allocations = accountIds.map((accountId) => ({
-      budget_item_id: budgetItemId,
-      account_id: accountId,
-      amount_cents: values[definition.rowKey]?.[accountId] ?? 0,
-    }));
-
-    if (allocations.length === 0) {
-      continue;
-    }
-
-    const { error } = await client.from("budget_allocations").upsert(allocations, {
-      onConflict: "budget_item_id,account_id",
-    });
-
-    if (error) {
-      throw new Error(`Não foi possível guardar "${definition.description}": ${error.message}`);
     }
   }
 

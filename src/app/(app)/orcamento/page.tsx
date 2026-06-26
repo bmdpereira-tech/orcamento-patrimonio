@@ -3,7 +3,7 @@ import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
 import { MonthlyBudgetTable } from "@/components/monthly-budget-table";
 import { SummaryCard } from "@/components/summary-card";
 import { UI_TEXT } from "@/content/ui-text";
-import { FIRST_MONTH, addMonths, formatMonthLabel, normaliseMonth } from "@/domain/budget/months";
+import { FIRST_MONTH, addMonths, formatMonthLabel, getMonthIdForDate, normaliseMonth } from "@/domain/budget/months";
 import { formatEuroCents } from "@/domain/budget/money";
 import { getSupabaseBudgetOverview } from "@/server/budget/monthly-overview";
 import {
@@ -33,7 +33,8 @@ const statusMessages: Record<string, string> = {
 
 export default async function BudgetPage({ searchParams }: BudgetPageProps) {
   const params = await searchParams;
-  const month = normaliseMonth(params.month);
+  const currentMonth = normaliseMonth(getMonthIdForDate());
+  const month = normaliseMonth(params.month ?? currentMonth);
   const previousMonth = addMonths(month, -1);
   const nextMonth = addMonths(month, 1);
   const canGoPrevious = previousMonth >= FIRST_MONTH;
@@ -90,7 +91,7 @@ export default async function BudgetPage({ searchParams }: BudgetPageProps) {
           </Link>
 
           <Link
-            href={`/orcamento?month=${FIRST_MONTH}`}
+            href={`/orcamento?month=${currentMonth}`}
             className="inline-flex h-10 items-center rounded-md bg-brand-700 px-3 text-sm font-semibold text-white shadow-sm hover:bg-brand-900"
           >
             {UI_TEXT.budget.currentMonth}

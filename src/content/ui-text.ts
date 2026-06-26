@@ -26,11 +26,7 @@ export const UI_TEXT = {
     month: "Mês",
     nextMonth: "Mês seguinte",
     currentMonth: "Mês actual",
-    firstMonthNotice:
-      "Julho de 2026 é o primeiro mês disponível. Os saldos iniciais serão introduzidos manualmente.",
     monthlyTable: "Tabela mensal",
-    movement: "Movimento",
-    saveChanges: "Guardar alterações",
     rowHeader: "Linha",
     heritageSection: "Património",
     investments: "Investimentos",
@@ -51,5 +47,4 @@ export const PRIMARY_UI_TITLES = [
   UI_TEXT.budget.monthlyBudget,
   UI_TEXT.budget.previousMonth,
   UI_TEXT.budget.currentMonth,
-  UI_TEXT.budget.firstMonthNotice,
 ] as const;

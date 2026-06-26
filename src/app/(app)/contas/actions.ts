@@ -66,11 +66,18 @@ function revalidateAccountViews() {
   revalidatePath("/orcamento");
 }
 
+function getAccountVisibilityImpactMonth(
+  account: { showInBudget: boolean; includeInNetWorth: boolean },
+  firstAffectedMonth: MonthId,
+) {
+  return account.showInBudget || account.includeInNetWorth ? firstAffectedMonth : null;
+}
+
 export async function createAccountAction(formData: FormData): Promise<HistoricalActionResult<{ status: string }>> {
   try {
     const input = parseAccountInput(formData);
     const impactResult = getHistoricalImpactActionResult({
-      firstAffectedMonth: input.showInBudget || input.includeInNetWorth ? input.startMonth : null,
+      firstAffectedMonth: getAccountVisibilityImpactMonth(input, input.startMonth),
       formData,
     });
 
@@ -127,7 +134,11 @@ export async function archiveAccountAction(formData: FormData): Promise<Historic
       throw new Error("Conta inválida.");
     }
 
-    const impactResult = getHistoricalImpactActionResult({ firstAffectedMonth: archiveFromMonth, formData });
+    const account = await getAccountById(id);
+    const impactResult = getHistoricalImpactActionResult({
+      firstAffectedMonth: getAccountVisibilityImpactMonth(account, archiveFromMonth),
+      formData,
+    });
 
     if (impactResult) {
       return impactResult;
@@ -154,7 +165,10 @@ export async function reactivateAccountAction(formData: FormData): Promise<Histo
 
     const account = await getAccountById(id);
     const impactResult = getHistoricalImpactActionResult({
-      firstAffectedMonth: account.archivedFromMonth ?? account.startMonth,
+      firstAffectedMonth: getAccountVisibilityImpactMonth(
+        account,
+        account.archivedFromMonth ?? account.startMonth,
+      ),
       formData,
     });
 
@@ -184,7 +198,7 @@ export async function deleteAccountAction(formData: FormData): Promise<Historica
 
     const account = await getAccountById(id);
     const impactResult = getHistoricalImpactActionResult({
-      firstAffectedMonth: account.startMonth,
+      firstAffectedMonth: getAccountVisibilityImpactMonth(account, account.startMonth),
       formData,
     });
 

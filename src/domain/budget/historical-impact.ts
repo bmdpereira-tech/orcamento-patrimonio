@@ -1,4 +1,4 @@
-import { formatMonthLabel, type MonthId } from "./months";
+import { formatMonthLabel, getMonthIdForDate, type MonthId } from "./months";
 
 export const HISTORICAL_IMPACT_TIME_ZONE = "Europe/Lisbon";
 
@@ -40,19 +40,7 @@ export function getMonthIdInTimeZone(
   date = new Date(),
   timeZone = HISTORICAL_IMPACT_TIME_ZONE,
 ): MonthId {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    year: "numeric",
-    month: "2-digit",
-    timeZone,
-  }).formatToParts(date);
-  const year = parts.find((part) => part.type === "year")?.value;
-  const month = parts.find((part) => part.type === "month")?.value;
-
-  if (!year || !month) {
-    throw new Error("Não foi possível determinar o mês actual.");
-  }
-
-  return `${year}-${month}` as MonthId;
+  return getMonthIdForDate(date, timeZone);
 }
 
 export function buildHistoricalImpactMessage(firstAffectedMonth: MonthId) {

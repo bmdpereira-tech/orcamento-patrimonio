@@ -152,13 +152,17 @@ export async function setRecurringRuleActiveAction(formData: FormData): Promise<
     }
 
     const existingRule = await getRecurringRuleById(createSupabaseAdminClient(), id);
-    const impactResult = getHistoricalImpactActionResult({ firstAffectedMonth: existingRule.startMonth, formData });
+    const active = getText(formData, "active") === "true";
+    const impactResult = getHistoricalImpactActionResult({
+      firstAffectedMonth: existingRule.active === active ? null : existingRule.startMonth,
+      formData,
+    });
 
     if (impactResult) {
       return impactResult;
     }
 
-    const rule = await setRecurringRuleActive(id, getText(formData, "active") === "true");
+    const rule = await setRecurringRuleActive(id, active);
     revalidateRecurringViews();
 
     return { ok: true, rule };
@@ -179,7 +183,10 @@ export async function archiveRecurringRuleAction(formData: FormData): Promise<Re
     }
 
     const existingRule = await getRecurringRuleById(createSupabaseAdminClient(), id);
-    const impactResult = getHistoricalImpactActionResult({ firstAffectedMonth: existingRule.startMonth, formData });
+    const impactResult = getHistoricalImpactActionResult({
+      firstAffectedMonth: existingRule.archivedAt ? null : existingRule.startMonth,
+      formData,
+    });
 
     if (impactResult) {
       return impactResult;
@@ -206,7 +213,10 @@ export async function reactivateRecurringRuleAction(formData: FormData): Promise
     }
 
     const existingRule = await getRecurringRuleById(createSupabaseAdminClient(), id);
-    const impactResult = getHistoricalImpactActionResult({ firstAffectedMonth: existingRule.startMonth, formData });
+    const impactResult = getHistoricalImpactActionResult({
+      firstAffectedMonth: existingRule.archivedAt ? existingRule.startMonth : null,
+      formData,
+    });
 
     if (impactResult) {
       return impactResult;

@@ -1,4 +1,4 @@
-import { APP_LOCALE, FIRST_MONTH } from "./constants";
+import { APP_LOCALE, APP_TIME_ZONE, FIRST_MONTH } from "./constants";
 
 export { FIRST_MONTH };
 
@@ -53,9 +53,18 @@ export function toMonthStartDate(monthId: string) {
   return `${year}-${String(month).padStart(2, "0")}-01`;
 }
 
-export function getMonthIdForDate(date = new Date()): MonthId {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
+export function getMonthIdForDate(date = new Date(), timeZone = APP_TIME_ZONE): MonthId {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    timeZone,
+  }).formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+
+  if (!year || !month) {
+    throw new Error("Não foi possível determinar o mês actual.");
+  }
 
   return `${year}-${month}` as MonthId;
 }

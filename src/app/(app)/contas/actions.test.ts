@@ -47,6 +47,18 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-09-15T10:00:00Z"));
+  mocks.getAccountById.mockResolvedValue({
+    id: "account-a",
+    name: "Santander",
+    accountType: "bank_account",
+    isCreditCard: false,
+    linkedPaymentAccountId: undefined,
+    startMonth: "2026-07",
+    archivedFromMonth: undefined,
+    showInBudget: true,
+    includeInNetWorth: true,
+    sortOrder: 10,
+  });
 });
 
 afterEach(() => {
@@ -78,6 +90,25 @@ describe("account server actions historical protection", () => {
     formData.set("confirmHistoricalImpact", "true");
 
     await expect(archiveAccountAction(formData)).resolves.toEqual({ ok: true, status: "archived" });
+
+    expect(mocks.archiveAccount).toHaveBeenCalledWith("account-a", "2026-08");
+  });
+
+  it("does not request historical confirmation when archiving an account without financial visibility", async () => {
+    mocks.getAccountById.mockResolvedValue({
+      id: "account-a",
+      name: "Conta oculta",
+      accountType: "other",
+      isCreditCard: false,
+      linkedPaymentAccountId: undefined,
+      startMonth: "2026-07",
+      archivedFromMonth: undefined,
+      showInBudget: false,
+      includeInNetWorth: false,
+      sortOrder: 10,
+    });
+
+    await expect(archiveAccountAction(accountFormData())).resolves.toEqual({ ok: true, status: "archived" });
 
     expect(mocks.archiveAccount).toHaveBeenCalledWith("account-a", "2026-08");
   });

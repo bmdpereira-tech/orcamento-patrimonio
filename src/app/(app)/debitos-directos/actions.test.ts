@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createRecurringRuleAction, deleteRecurringRuleAction } from "./actions";
+import { createRecurringRuleAction, deleteRecurringRuleAction, setRecurringRuleActiveAction } from "./actions";
 
 const mocks = vi.hoisted(() => ({
   createSupabaseAdminClient: vi.fn(() => ({})),
@@ -36,6 +36,14 @@ vi.mock("@/server/budget/recurring-rules", () => ({
 function deleteFormData(id: string) {
   const formData = new FormData();
   formData.set("id", id);
+
+  return formData;
+}
+
+function activeFormData(id: string, active: boolean) {
+  const formData = new FormData();
+  formData.set("id", id);
+  formData.set("active", String(active));
 
   return formData;
 }
@@ -136,5 +144,30 @@ describe("direct debit server actions", () => {
       firstAffectedMonth: "2026-08",
     });
     expect(mocks.createRecurringRule).not.toHaveBeenCalled();
+  });
+
+  it("does not request historical confirmation when the active state is unchanged", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-15T10:00:00Z"));
+    mocks.getRecurringRuleById.mockResolvedValue({
+      id: "rule-a",
+      startMonth: "2026-08",
+      active: false,
+    });
+    mocks.setRecurringRuleActive.mockResolvedValue({
+      id: "rule-a",
+      startMonth: "2026-08",
+      active: false,
+    });
+
+    await expect(setRecurringRuleActiveAction(activeFormData("rule-a", false))).resolves.toMatchObject({
+      ok: true,
+      rule: {
+        id: "rule-a",
+        active: false,
+      },
+    });
+
+    expect(mocks.setRecurringRuleActive).toHaveBeenCalledWith("rule-a", false);
   });
 });

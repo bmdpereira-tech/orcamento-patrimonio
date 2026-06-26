@@ -32,6 +32,11 @@ describe("month helpers", () => {
   });
 
   it("gets a month id from a date", () => {
-    expect(getMonthIdForDate(new Date(2026, 8, 25))).toBe("2026-09");
+    expect(getMonthIdForDate(new Date("2026-09-25T10:00:00.000Z"))).toBe("2026-09");
+  });
+
+  it("uses Europe/Lisbon when getting the current month", () => {
+    expect(getMonthIdForDate(new Date("2026-08-31T22:30:00.000Z"))).toBe("2026-08");
+    expect(getMonthIdForDate(new Date("2026-08-31T23:30:00.000Z"))).toBe("2026-09");
   });
 });

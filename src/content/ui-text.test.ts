@@ -11,9 +11,7 @@ describe("Portuguese UI text", () => {
     expect(UI_TEXT.summary.forecasts).toBe("Previsões");
     expect(UI_TEXT.summary.creditCardDebt).toBe("Dívida dos cartões");
     expect(UI_TEXT.summary.netWorth).toBe("Património líquido");
-    expect(UI_TEXT.budget.firstMonthNotice).toBe(
-      "Julho de 2026 é o primeiro mês disponível. Os saldos iniciais serão introduzidos manualmente.",
-    );
+    expect(UI_TEXT.budget.monthlyTable).toBe("Tabela mensal");
   });
 
   it("keeps the main user-facing titles accented", () => {
