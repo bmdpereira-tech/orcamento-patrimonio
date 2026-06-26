@@ -19,7 +19,15 @@ vi.mock("@/server/budget/monthly-overview", () => ({
     return buildBudgetOverview({
       month,
       accounts: [account],
-      investmentAssets: [],
+      investmentAssets: [
+        {
+          id: "core-equity",
+          name: "Core Equity",
+          startMonth: "2025-01",
+          sortOrder: 10,
+          monthlyValuesCents: { [month]: 10_000_00 },
+        },
+      ],
       snapshots: [
         {
           ...createEmptySnapshot("account-a"),
@@ -73,5 +81,18 @@ describe("BudgetPage", () => {
     expect(screen.getByRole("link", { name: "Mês actual" }).getAttribute("href")).toBe(
       "/orcamento?month=2026-09",
     );
+  });
+
+  it("renders investment valuation cards and net worth from the monthly overview", async () => {
+    const page = await BudgetPage({
+      searchParams: Promise.resolve({ month: "2026-07" }),
+    });
+
+    render(page);
+
+    expect(screen.getAllByText("Investimentos").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("10 000,00 €").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Património líquido").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("10 100,00 €").length).toBeGreaterThan(0);
   });
 });

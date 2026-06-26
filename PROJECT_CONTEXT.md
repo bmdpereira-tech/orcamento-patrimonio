@@ -241,6 +241,48 @@ Decisão funcional associada:
 - `current_balance_override_cents` permanece no schema por compatibilidade com dados antigos, mas deixou de ser a fonte de verdade nas novas gravações;
 - dados antigos em `current_balance_override_cents` são interpretados como fallback quando `realised_movements_override_cents` ainda não existe para esse mês/conta.
 
+Foi também criada a migration incremental:
+
+```text
+20260701009000_investment_cash_flows_and_valuations.sql
+```
+
+Esta migration implementa o primeiro bloco técnico de Investimentos:
+
+- reutiliza `investment_assets`;
+- cria o tipo `investment_cash_flow_type` com `contribution` e `redemption`;
+- cria `investment_cash_flows` para entregas e resgates, com montantes positivos;
+- cria `investment_valuations` para valorizações datadas, com valor de mercado em EUR/cêntimos;
+- não altera `investment_month_values`, que permanece como estrutura legada;
+- usa UUID, timestamps, índices, constraints, trigger `updated_at`, RLS e policy `no_client_access`.
+
+Foi também criada a migration incremental:
+
+```text
+20260701010000_investment_assets_description.sql
+```
+
+Esta migration suporta o segundo bloco de Investimentos:
+
+- acrescenta `description` opcional a `investment_assets`;
+- mantém o campo nulo por omissão para compatibilidade com dados existentes;
+- adiciona uma constraint não destrutiva para impedir descrições vazias quando preenchidas.
+
+Foi também criada a migration incremental:
+
+```text
+20260701011000_investment_dates_before_budget_start.sql
+```
+
+Esta migration corrige a separação entre Orçamento e Investimentos:
+
+- remove o limite mínimo de 2026-07-01 em `investment_cash_flows.flow_date`;
+- remove o limite mínimo de 2026-07-01 em `investment_valuations.valuation_date`;
+- relaxa `investment_assets.start_month` para permitir activos iniciados antes de Julho de 2026;
+- mantém `start_month` e `archived_from_month` como datas de início de mês;
+- mantém `archived_from_month >= start_month`;
+- não altera a regra de Julho de 2026 nas tabelas e fluxos próprios do Orçamento.
+
 Novas migrations devem:
 
 - ter timestamp posterior à última migration versionada;
@@ -573,17 +615,107 @@ Validações técnicas desta revisão:
 - `npm.cmd run build` passou;
 - `git diff --check` passou, apenas com avisos CRLF já esperados.
 
+Nota do primeiro bloco técnico de Investimentos em 26/06/2026:
+
+- foi criado o domínio puro `src/domain/budget/investments.ts`;
+- foram modelados fluxos de capital (`contribution` e `redemption`) e valorizações datadas;
+- no domínio, entregas entram como fluxos negativos, resgates como fluxos positivos e a valorização terminal como fluxo positivo;
+- são calculados por investimento e globalmente: total entregue, total resgatado, capital líquido investido, última valorização elegível, ganho/perda, rentabilidade simples e XIRR;
+- a rentabilidade simples usa `ganho/perda ÷ total entregue` e devolve `null` quando o total entregue é zero;
+- a XIRR usa dias reais/base 365, Newton-Raphson com fallback por bissecção e devolve `null` quando faltam fluxos suficientes ou não há solução matemática segura;
+- a regra mensal passa a existir no domínio: o valor mensal de um activo é a última valorização com data igual ou anterior ao último dia do mês;
+- valorizações futuras são excluídas e uma valorização mantém-se aplicável aos meses seguintes até surgir outra;
+- `investment_cash` continua separado de activos: contas como `T212 Cash` não entram na valorização dos activos;
+- não foram alterados a página de Investimentos, o Orçamento ou o Histórico.
+
+Validações técnicas iniciais deste bloco:
+
+- `npm.cmd run typecheck` passou;
+- teste focado `npm.cmd test -- src/domain/budget/investments.test.ts` passou com permissão elevada: 1 ficheiro e 13 testes.
+
+Nota do segundo bloco de Investimentos em 26/06/2026:
+
+- foi criado o serviço server-only `src/server/budget/investments.ts`;
+- a tab `Investimentos` passou a carregar dados reais do Supabase;
+- a página usa `investment_assets`, `investment_cash_flows` e `investment_valuations`;
+- é possível criar investimento, editar nome/descrição/ordem, arquivar, reactivar e eliminar apenas quando não existirem fluxos nem valorizações;
+- é possível criar, editar e eliminar entregas, resgates e valorizações;
+- entregas e resgates usam montantes introduzidos positivamente; o tipo define o sinal económico no domínio;
+- valorizações aceitam valor de mercado em EUR/cêntimos e não permitem duplicação do mesmo investimento na mesma data através da constraint única da base de dados;
+- a interface mostra resumo global, métricas por investimento, última valorização elegível e lista cronológica de fluxos/valorizações;
+- métricas de Investimentos usam o domínio puro já criado: total entregue, total resgatado, capital líquido investido, valor de mercado, ganho/perda, rentabilidade simples e XIRR;
+- datas futuras podem ser registadas e aparecem na lista, mas só entram nas métricas quando forem elegíveis pela data de referência;
+- investimentos arquivados mantêm dados e métricas visíveis;
+- alterações financeiras com data em mês passado passam pela protecção histórica existente;
+- ainda não houve integração com Orçamento, Histórico ou Património.
+
+Validações técnicas deste bloco:
+
+- `npm.cmd run lint` passou;
+- `npm.cmd run typecheck` passou;
+- `npm.cmd test` passou com permissão elevada: 24 ficheiros e 189 testes;
+- `npm.cmd run build` passou;
+- `git diff --check` passou, apenas com avisos CRLF já esperados.
+
+Nota da correcção de histórico anterior ao Orçamento em Investimentos em 26/06/2026:
+
+- causa corrigida: o serviço `src/server/budget/investments.ts` reutilizava `FIRST_MONTH` do Orçamento para validar datas de resumo, fluxos e valorizações;
+- essa validação fazia a página Investimentos falhar em Junho de 2026 com `O resumo deve ser igual ou posterior a Julho de 2026.`;
+- a validação de datas de Investimentos deixou de ter limite mínimo de Julho de 2026;
+- `src/app/(app)/investimentos/actions.ts` deixou de normalizar meses de fluxos/valorizações através de `normaliseMonth`, preservando meses reais como `2025-05`;
+- a criação de investimento passou a aceitar mês de início anterior a Julho de 2026;
+- a interface mostra o campo `Início` ao criar investimento e preserva o `startMonth` existente ao editar;
+- entregas, resgates e valorizações de 2025 são aceites, com confirmação histórica quando aplicável;
+- esses registos entram no cálculo de total entregue, total resgatado, capital líquido, ganho/perda, rentabilidade simples e XIRR;
+- valorizações futuras face à data de referência continuam excluídas;
+- a regra de Julho de 2026 permanece limitada ao módulo de Orçamento.
+
+Validações técnicas desta correcção:
+
+- `npm.cmd run lint` passou;
+- `npm.cmd run typecheck` passou;
+- `npm.cmd test` passou com permissão elevada: 25 ficheiros e 195 testes;
+- `npm.cmd run build` passou;
+- `git diff --check` passou, apenas com avisos CRLF já esperados.
+
+Nota da integração de valorizações de Investimentos com Orçamento/Património em 26/06/2026:
+
+- a interface activa de Investimentos deixou de expor o campo `Nota` em criação, edição e listagem de entregas, resgates e valorizações;
+- as colunas `note` permanecem no schema e nos tipos por compatibilidade, mas a UI já não as utiliza;
+- a lista cronológica de movimentos e valorizações passou a ficar recolhida por defeito em cada investimento;
+- cada investimento tem controlo independente `Ver detalhe`/`Ocultar detalhe`, sem persistência no Supabase;
+- a lista de detalhe foi compactada, com linhas, inputs e acções mais baixas e select `Entrega`/`Resgate` sem texto cortado;
+- o Orçamento mensal deixou de usar `investment_month_values` como origem futura do valor dos investimentos;
+- `src/server/budget/monthly-overview.ts` passou a carregar `investment_valuations` e a seleccionar, por activo e por mês, a última valorização com `valuation_date <= último dia do mês`;
+- uma valorização de Julho entra em Julho; uma valorização posterior a 31/07 não entra em Julho; a última valorização elegível é transportada para meses seguintes até existir outra;
+- entregas e resgates não alteram directamente o valor de mercado no Orçamento;
+- contas `investment_cash`, como `T212 Cash`, continuam a entrar apenas como contas de liquidez/património e não são duplicadas no total de Investimentos;
+- a linha `Investimentos` da secção Património da tabela mensal, o card superior `Investimentos` e o `Património líquido` passam a reflectir o total das valorizações elegíveis;
+- alterações em Investimentos passaram a revalidar também `/orcamento`;
+- não foi criada migration nova nesta integração;
+- a tab Histórico ainda não foi integrada com Investimentos.
+
+Validações técnicas desta integração:
+
+- `npm.cmd run lint` passou;
+- `npm.cmd run typecheck` passou;
+- `npm.cmd test` passou com permissão elevada: 26 ficheiros e 202 testes;
+- `npm.cmd run build` passou;
+- `git diff --check` passou, apenas com avisos CRLF já esperados.
+
 ### 10.2 Problemas ainda existentes
 
 A Fase 2 aguarda validação manual desta revisão antes de commit.
 
 Problemas confirmados:
 
-- validar manualmente no browser as correcções desta revisão integral;
+- aplicar as migrations `20260701009000_investment_cash_flows_and_valuations.sql`, `20260701010000_investment_assets_description.sql` e `20260701011000_investment_dates_before_budget_start.sql` antes de usar a tab Investimentos contra Supabase real, caso ainda não estejam aplicadas;
+- validar manualmente no browser a integração das valorizações de Investimentos com Orçamento e Património;
+- validar manualmente no browser o CRUD real da tab Investimentos;
 - validar manualmente no browser a protecção de alterações históricas assim que existirem meses anteriores utilizáveis;
 - confirmar em browser que mudanças de mês preservam autosaves pendentes e usam o mês correcto;
 - continuar a validar totais horizontais e cartões superiores contra cenários reais com várias contas/cartões;
-- a tab Investimentos ainda não está implementada funcionalmente.
+- a integração de Investimentos com a tab Histórico ainda não foi implementada.
 
 Não avançar para a Fase 3 antes de concluir estes pontos.
 
@@ -991,11 +1123,23 @@ Referência de densidade:
 
 Linhas automáticas devem aparecer como texto ou célula calculada, não como input.
 
-## 15. Fase 3 — Investimentos
+## 15. Investimentos
 
-A tab Investimentos ainda não deve ser implementada antes da conclusão da Fase 2.
+A tab Investimentos começou a ser implementada após a estabilização da Fase 2.
 
-Quando avançar, deve suportar:
+Estado actual:
+
+- modelo de dados criado para activos, fluxos e valorizações;
+- domínio puro criado para métricas e XIRR;
+- serviços Supabase e Server Actions criados;
+- interface funcional ligada ao Supabase para gestão dos investimentos;
+- interface activa sem campo `Nota` para fluxos e valorizações;
+- lista cronológica por investimento recolhida por defeito e expandida por investimento;
+- integrada com Orçamento e Património através das valorizações elegíveis em `investment_valuations`;
+- ainda não integrada com a tab Histórico;
+- ainda sem gráficos.
+
+O módulo deve suportar:
 
 - fundos;
 - entregas;
@@ -1036,14 +1180,14 @@ O modelo deve permitir criar outros fundos no futuro.
 - data;
 - tipo: entrega ou resgate;
 - montante positivo;
-- notas.
+- nota opcional no schema, actualmente não exposta na UI activa.
 
 #### Valorizações
 
 - fundo;
 - data;
 - valor de mercado;
-- notas.
+- nota opcional no schema, actualmente não exposta na UI activa.
 
 Não permitir duplicação de valorização para o mesmo fundo e data.
 
@@ -1069,7 +1213,7 @@ A TIR global não deve ser média das TIR individuais.
 
 ## 16. Integração mensal dos Investimentos
 
-Depois da implementação da tab Investimentos, a linha “Investimentos” do Orçamento deve ser automática.
+A linha “Investimentos” do Orçamento é automática e calculada a partir das valorizações registadas.
 
 Para cada fundo e data de referência:
 
@@ -1094,14 +1238,14 @@ Nunca:
 ### 16.1 Data limite
 
 ```text
-data_limite = MIN(último dia do mês seleccionado, data actual)
+data_limite = último dia do mês seleccionado
 ```
 
 Regras:
 
 - mês passado: último dia do mês;
-- mês actual: data actual;
-- mês futuro: data actual.
+- mês actual: último dia do mês;
+- mês futuro: último dia do mês.
 
 ### 16.2 Transporte da última valorização
 
@@ -1117,9 +1261,8 @@ Cada fundo pode usar uma data de valorização diferente.
 
 Se um fundo não tiver valorização elegível:
 
-- não assumir zero como valorização real;
-- apresentar “Sem valorização”;
-- indicar que o total está incompleto;
+- não é criada valorização artificial;
+- o fundo não acrescenta valor ao total mensal enquanto não existir valorização elegível;
 - não gerar erro.
 
 ### 16.3 Ligação ao Orçamento
@@ -1136,6 +1279,7 @@ A linha deve ser:
 - incluída em Património líquido;
 - recalculada ao criar, editar ou eliminar uma valorização;
 - não guardada como duplicação manual mensal.
+- baseada em `investment_valuations`, não em `investment_month_values`.
 
 ## 17. Formatação
 
@@ -1191,6 +1335,7 @@ Testes mínimos da Fase 2:
 - recálculo após refresh;
 - linhas calculadas não editáveis; **coberto para Saldo actual, Débitos directos, Day to day, Pagamentos de cartões e Salário**
 - tabela compacta.
+- Investimentos: domínio, XIRR, valorização mensal, CRUD de activos, fluxos, valorizações, eliminação segura, protecção histórica, UI sem notas, detalhe recolhível e integração com Orçamento/Património; **coberto por testes de domínio, serviço, actions, componente e página**
 
 ## 19. Comandos úteis
 
@@ -1240,12 +1385,8 @@ Antes de alterar qualquer ficheiro, lê integralmente PROJECT_CONTEXT.md e inspe
 
 O próximo trabalho deve continuar exclusivamente na Fase 2:
 
-1. validar no browser a revisão integral da Fase 2: fórmulas mensais, estados mensais, autosave, Débitos directos, Day to day, cartões, Salário, Histórico e Contas;
-2. confirmar que a página Orçamento sem parâmetro abre o mês actual em `Europe/Lisbon` e que `Mês actual` aponta para esse mês;
-3. validar que alterações no mês actual e em meses futuros não abrem modal;
-4. quando existirem meses anteriores utilizáveis, validar que alterações financeiras históricas abrem o modal e que `Cancelar` não grava;
-5. validar que `Aplicar alteração` grava e recalcula os meses seguintes;
-6. validar que alterações apenas de descrição, nome ou ordem visual não disparam alerta;
-7. confirmar que os autosaves pendentes ficam suspensos enquanto o modal está aberto;
-8. criar commit Git se a validação manual for aprovada;
-9. só depois iniciar Investimentos.
+1. aplicar no Supabase real as migrations pendentes de Investimentos, quando for oportuno;
+2. validar manualmente no browser o CRUD de investimentos, fluxos e valorizações;
+3. criar commit Git se a validação manual for aprovada;
+4. avançar depois para a integração de Investimentos com a tab Histórico;
+5. só depois considerar gráficos ou funcionalidades adicionais.

@@ -10,7 +10,7 @@ import {
 } from "./months";
 
 describe("month helpers", () => {
-  it("normalises invalid or previous months to July 2026", () => {
+  it("keeps the budget month normalisation limited to July 2026", () => {
     expect(normaliseMonth()).toBe(FIRST_MONTH);
     expect(normaliseMonth("2026-06")).toBe(FIRST_MONTH);
     expect(normaliseMonth("not-a-month")).toBe(FIRST_MONTH);

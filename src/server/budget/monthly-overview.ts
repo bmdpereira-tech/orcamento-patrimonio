@@ -14,6 +14,11 @@ import {
   buildDailyBudgetSourceAmountMap,
   calculateDailyBudgetForecast,
 } from "@/domain/budget/daily-budget";
+import {
+  getInvestmentValueForMonth,
+  getMonthEndDate,
+  type InvestmentValuation,
+} from "@/domain/budget/investments";
 import { assertCents, type Cents } from "@/domain/budget/money";
 import { FIRST_MONTH, toMonthStartDate, type MonthId } from "@/domain/budget/months";
 import {
@@ -75,10 +80,10 @@ type InvestmentAssetRow = {
   sort_order: number;
 };
 
-type InvestmentMonthValueRow = {
+type InvestmentValuationRow = {
   investment_asset_id: string;
-  month: string;
-  value_cents: number;
+  valuation_date: string;
+  market_value_cents: number;
 };
 
 export type CustomBudgetItemSaveInput = {
@@ -156,33 +161,46 @@ async function fetchBudgetItems(client: SupabaseClient, month: MonthId) {
   return { items: itemRows, allocations: (allocations ?? []) as BudgetAllocationRow[] };
 }
 
+export function attachInvestmentValuationsForMonth({
+  assets,
+  valuations,
+  month,
+}: {
+  assets: readonly InvestmentAsset[];
+  valuations: readonly InvestmentValuation[];
+  month: MonthId;
+}) {
+  return getActiveInvestmentAssets(assets, month).map((asset): InvestmentAsset => {
+    const valuation = getInvestmentValueForMonth(asset.id, valuations, month);
+
+    return {
+      ...asset,
+      monthlyValuesCents: valuation ? { [month]: valuation.marketValueCents } : undefined,
+    };
+  });
+}
+
 async function fetchInvestmentAssets(client: SupabaseClient, month: MonthId) {
-  const [{ data: assets, error: assetsError }, { data: values, error: valuesError }] = await Promise.all([
+  const monthEndDate = getMonthEndDate(month);
+  const [{ data: assets, error: assetsError }, { data: valuations, error: valuationsError }] = await Promise.all([
     client
       .from("investment_assets")
       .select("id,name,start_month,archived_from_month,sort_order")
       .order("sort_order")
       .order("name"),
     client
-      .from("investment_month_values")
-      .select("investment_asset_id,month,value_cents")
-      .eq("month", toMonthStartDate(month)),
+      .from("investment_valuations")
+      .select("investment_asset_id,valuation_date,market_value_cents")
+      .lte("valuation_date", monthEndDate),
   ]);
 
   if (assetsError) {
     throw new Error(`Não foi possível carregar os activos de investimento: ${assetsError.message}`);
   }
 
-  if (valuesError) {
-    throw new Error(`Não foi possível carregar os valores de investimento: ${valuesError.message}`);
+  if (valuationsError) {
+    throw new Error(`Não foi possível carregar os valores de investimento: ${valuationsError.message}`);
   }
-
-  const valueByAssetId = new Map(
-    ((values ?? []) as InvestmentMonthValueRow[]).map((value) => [
-      value.investment_asset_id,
-      assertCents(value.value_cents),
-    ]),
-  );
 
   const mappedAssets: InvestmentAsset[] = ((assets ?? []) as InvestmentAssetRow[]).map((asset) => ({
     id: asset.id,
@@ -190,10 +208,20 @@ async function fetchInvestmentAssets(client: SupabaseClient, month: MonthId) {
     startMonth: asset.start_month.slice(0, 7) as MonthId,
     archivedFromMonth: asset.archived_from_month ? (asset.archived_from_month.slice(0, 7) as MonthId) : undefined,
     sortOrder: asset.sort_order,
-    monthlyValuesCents: valueByAssetId.has(asset.id) ? { [month]: valueByAssetId.get(asset.id) ?? 0 } : undefined,
   }));
+  const mappedValuations: InvestmentValuation[] = ((valuations ?? []) as InvestmentValuationRow[]).map(
+    (valuation) => ({
+      investmentAssetId: valuation.investment_asset_id,
+      valuationDate: valuation.valuation_date,
+      marketValueCents: assertCents(valuation.market_value_cents),
+    }),
+  );
 
-  return getActiveInvestmentAssets(mappedAssets, month);
+  return attachInvestmentValuationsForMonth({
+    assets: mappedAssets,
+    valuations: mappedValuations,
+    month,
+  });
 }
 
 function buildSourceAmountMap(items: readonly BudgetItemRow[], allocations: readonly BudgetAllocationRow[]) {
