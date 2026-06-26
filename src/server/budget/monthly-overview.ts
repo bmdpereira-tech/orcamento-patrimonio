@@ -51,6 +51,7 @@ type AccountMonthStateRow = {
   month: string;
   initial_balance_override_cents: number | null;
   current_balance_override_cents: number | null;
+  realised_movements_override_cents?: number | null;
 };
 
 type BudgetItemRow = {
@@ -153,7 +154,7 @@ function isMonthlySystemSourceType(sourceType: string): sourceType is MonthlySys
 async function fetchAccountMonthStates(client: SupabaseClient, month: MonthId) {
   const { data, error } = await client
     .from("account_month_states")
-    .select("account_id,month,initial_balance_override_cents,current_balance_override_cents")
+    .select("account_id,month,initial_balance_override_cents,current_balance_override_cents,realised_movements_override_cents")
     .gte("month", toMonthStartDate(FIRST_MONTH as MonthId))
     .lte("month", toMonthStartDate(month));
 
@@ -169,6 +170,10 @@ async function fetchAccountMonthStates(client: SupabaseClient, month: MonthId) {
         state.initial_balance_override_cents === null ? null : assertCents(state.initial_balance_override_cents),
       currentBalanceOverrideCents:
         state.current_balance_override_cents === null ? null : assertCents(state.current_balance_override_cents),
+      realisedMovementsOverrideCents:
+        state.realised_movements_override_cents === null || state.realised_movements_override_cents === undefined
+          ? null
+          : assertCents(state.realised_movements_override_cents),
     }),
   );
 }
@@ -298,6 +303,36 @@ function buildCustomBudgetItems(items: readonly BudgetItemRow[], allocations: re
     });
 }
 
+function buildManualAllocationAmountMap({
+  monthDate,
+  items,
+  allocations,
+}: {
+  monthDate: string;
+  items: readonly BudgetItemRow[];
+  allocations: readonly BudgetAllocationRow[];
+}) {
+  const manualItemIds = new Set(
+    items
+      .filter((item) => item.month === monthDate && item.source_type === "manual")
+      .map((item) => item.id),
+  );
+  const amountByItemAndAccount = new Map<string, Cents>();
+
+  for (const allocation of allocations) {
+    if (!manualItemIds.has(allocation.budget_item_id)) {
+      continue;
+    }
+
+    amountByItemAndAccount.set(
+      `${allocation.budget_item_id}:${allocation.account_id}`,
+      assertCents(allocation.amount_cents),
+    );
+  }
+
+  return { manualItemIds, amountByItemAndAccount };
+}
+
 export async function getSupabaseBudgetOverview(
   month: MonthId,
   { referenceDate = new Date() }: { referenceDate?: Date } = {},
@@ -413,6 +448,78 @@ export async function getSupabaseBudgetOverview(
   });
 }
 
+export async function getMonthlyBudgetFinancialChangeMonth({
+  month,
+  values,
+  customItems = [],
+}: {
+  month: MonthId;
+  values: Record<EditableBudgetRowKey, Record<string, Cents>>;
+  customItems?: readonly CustomBudgetItemSaveInput[];
+}) {
+  const client = createSupabaseAdminClient();
+  const monthDate = toMonthStartDate(month);
+  const [existingOverview, budgetData] = await Promise.all([
+    getSupabaseBudgetOverview(month),
+    fetchBudgetItems(client, month),
+  ]);
+  const accountIds = existingOverview.accounts.map((account) => account.id);
+  const snapshotByAccountId = new Map(
+    existingOverview.snapshots.map((snapshot) => [snapshot.accountId, snapshot]),
+  );
+
+  for (const accountId of accountIds) {
+    const existingSnapshot = snapshotByAccountId.get(accountId);
+    const existingRealisedMovements = existingSnapshot?.realisedMovementsCents ?? 0;
+    const nextRealisedMovements = values["realised-movements"]?.[accountId] ?? 0;
+
+    if (existingRealisedMovements !== nextRealisedMovements) {
+      return month;
+    }
+
+    if (month === FIRST_MONTH) {
+      const existingInitialBalance = existingSnapshot?.initialBalanceCents ?? 0;
+      const nextInitialBalance = values["initial-balance"]?.[accountId] ?? 0;
+
+      if (existingInitialBalance !== nextInitialBalance) {
+        return month;
+      }
+    }
+  }
+
+  const { manualItemIds, amountByItemAndAccount } = buildManualAllocationAmountMap({
+    monthDate,
+    items: budgetData.items,
+    allocations: budgetData.allocations,
+  });
+  const incomingItemIds = new Set(customItems.map((item) => item.id));
+
+  for (const item of customItems) {
+    for (const accountId of accountIds) {
+      const existingAmount = amountByItemAndAccount.get(`${item.id}:${accountId}`) ?? 0;
+      const nextAmount = item.valuesByAccountId[accountId] ?? 0;
+
+      if (existingAmount !== nextAmount) {
+        return month;
+      }
+    }
+  }
+
+  for (const itemId of manualItemIds) {
+    if (incomingItemIds.has(itemId)) {
+      continue;
+    }
+
+    for (const accountId of accountIds) {
+      if ((amountByItemAndAccount.get(`${itemId}:${accountId}`) ?? 0) !== 0) {
+        return month;
+      }
+    }
+  }
+
+  return null;
+}
+
 async function ensureSystemBudgetItem(
   client: SupabaseClient,
   month: MonthId,
@@ -489,12 +596,14 @@ export async function saveMonthlyBudgetValues({
     const row: {
       account_id: string;
       month: string;
-      current_balance_override_cents: Cents;
+      realised_movements_override_cents: Cents;
+      current_balance_override_cents: null;
       initial_balance_override_cents?: Cents;
     } = {
       account_id: accountId,
       month: monthDate,
-      current_balance_override_cents: values["current-balance"]?.[accountId] ?? 0,
+      realised_movements_override_cents: values["realised-movements"]?.[accountId] ?? 0,
+      current_balance_override_cents: null,
     };
 
     if (month === FIRST_MONTH) {

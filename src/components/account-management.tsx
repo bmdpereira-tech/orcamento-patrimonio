@@ -1,11 +1,22 @@
 "use client";
 
-import { useFormStatus } from "react-dom";
+import { useCallback, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { AccountType } from "@/domain/budget/accounts";
+import {
+  isHistoricalImpactActionResult,
+  type HistoricalActionResult,
+  type HistoricalImpactRequiredActionResult,
+} from "@/domain/budget/historical-impact";
 import { formatMonthLabel, type MonthId } from "@/domain/budget/months";
 import type { ManagedAccount } from "@/server/budget/accounts";
+import {
+  HistoricalImpactModal,
+  type HistoricalImpactPrompt,
+  withHistoricalImpactConfirmation,
+} from "./historical-impact-modal";
 
-type AccountAction = (formData: FormData) => void | Promise<void>;
+type AccountAction = (formData: FormData) => Promise<HistoricalActionResult<{ status: string }>>;
 
 type AccountManagementProps = {
   accounts: ManagedAccount[];
@@ -26,9 +37,16 @@ const accountTypeOptions: readonly { value: AccountType; label: string }[] = [
   { value: "other", label: "Outra" },
 ];
 
-function SubmitButton({ children }: { children: React.ReactNode }) {
-  const { pending } = useFormStatus();
+const statusMessages: Record<string, string> = {
+  created: "Conta criada com sucesso.",
+  updated: "Conta actualizada com sucesso.",
+  archived: "Conta arquivada com sucesso.",
+  reactivated: "Conta reactivada com sucesso.",
+  deleted: "Conta eliminada com sucesso.",
+  "delete-blocked": "A conta tem dados associados e não foi eliminada. Podes arquivá-la para a esconder.",
+};
 
+function SubmitButton({ children, pending }: { children: React.ReactNode; pending: boolean }) {
   return (
     <button
       type="submit"
@@ -62,14 +80,6 @@ function accountStatus(account: ManagedAccount) {
   return account.archivedFromMonth ? `Arquivada desde ${formatMonthLabel(account.archivedFromMonth)}` : "Activa";
 }
 
-function confirmation(message: string) {
-  return (event: React.MouseEvent<HTMLButtonElement>) => {
-    if (!window.confirm(message)) {
-      event.preventDefault();
-    }
-  };
-}
-
 export function AccountManagement({
   accounts,
   initialMonth,
@@ -79,12 +89,147 @@ export function AccountManagement({
   reactivateAction,
   deleteAction,
 }: AccountManagementProps) {
+  const router = useRouter();
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pendingActionId, setPendingActionId] = useState<string | null>(null);
+  const [historicalPrompt, setHistoricalPrompt] = useState<HistoricalImpactPrompt | null>(null);
   const paymentAccountOptions = accounts.filter((account) => !account.isCreditCard && !account.archivedFromMonth);
+
+  const finishSuccessfulAction = useCallback(
+    (status: string) => {
+      setMessage(statusMessages[status] ?? "Alteração guardada com sucesso.");
+      setError(null);
+      setPendingActionId(null);
+      router.refresh();
+    },
+    [router],
+  );
+
+  const openHistoricalConfirmation = useCallback(
+    (
+      impact: HistoricalImpactRequiredActionResult,
+      handlers: {
+        onCancel: () => void;
+        onConfirm: () => Promise<void>;
+      },
+    ) => {
+      setHistoricalPrompt({
+        firstAffectedMonth: impact.firstAffectedMonth,
+        message: impact.message,
+        onCancel: () => {
+          handlers.onCancel();
+          setHistoricalPrompt(null);
+        },
+        onConfirm: () => {
+          setHistoricalPrompt((current) => (current ? { ...current, isApplying: true } : current));
+          void handlers.onConfirm().finally(() => {
+            setHistoricalPrompt(null);
+          });
+        },
+      });
+    },
+    [],
+  );
+
+  const runAccountAction = useCallback(
+    async ({
+      action,
+      formData,
+      pendingId,
+    }: {
+      action: AccountAction;
+      formData: FormData;
+      pendingId: string;
+    }) => {
+      setPendingActionId(pendingId);
+      setMessage(null);
+      setError(null);
+
+      const result = await action(formData);
+
+      if (isHistoricalImpactActionResult(result)) {
+        openHistoricalConfirmation(result, {
+          onCancel: () => {
+            setPendingActionId(null);
+          },
+          onConfirm: async () => {
+            setPendingActionId(pendingId);
+            const confirmedResult = await action(withHistoricalImpactConfirmation(formData));
+
+            if (isHistoricalImpactActionResult(confirmedResult)) {
+              setError(confirmedResult.message);
+              setPendingActionId(null);
+              return;
+            }
+
+            if (!confirmedResult.ok) {
+              setError(confirmedResult.error);
+              setPendingActionId(null);
+              return;
+            }
+
+            finishSuccessfulAction(confirmedResult.status);
+          },
+        });
+        return;
+      }
+
+      if (!result.ok) {
+        setError(result.error);
+        setPendingActionId(null);
+        return;
+      }
+
+      finishSuccessfulAction(result.status);
+    },
+    [finishSuccessfulAction, openHistoricalConfirmation],
+  );
+
+  const submitFormAction = useCallback(
+    (event: React.FormEvent<HTMLFormElement>, action: AccountAction, pendingId: string) => {
+      event.preventDefault();
+      void runAccountAction({
+        action,
+        formData: new FormData(event.currentTarget),
+        pendingId,
+      });
+    },
+    [runAccountAction],
+  );
+
+  const runButtonAction = useCallback(
+    (formId: string, action: AccountAction, pendingId: string) => {
+      const form = document.getElementById(formId);
+
+      if (!(form instanceof HTMLFormElement)) {
+        return;
+      }
+
+      void runAccountAction({
+        action,
+        formData: new FormData(form),
+        pendingId,
+      });
+    },
+    [runAccountAction],
+  );
 
   return (
     <div className="space-y-5">
+      {message ? (
+        <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+          {message}
+        </div>
+      ) : null}
+      {error ? (
+        <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">{error}</div>
+      ) : null}
       <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-        <form action={createAction} className="grid gap-3 lg:grid-cols-[1.2fr_0.9fr_1fr_0.7fr_auto] lg:items-end">
+        <form
+          onSubmit={(event) => submitFormAction(event, createAction, "new")}
+          className="grid gap-3 lg:grid-cols-[1.2fr_0.9fr_1fr_0.7fr_auto] lg:items-end"
+        >
           <div>
             <label htmlFor="new-account-name" className="text-xs font-semibold uppercase text-slate-500">
               Nome
@@ -130,7 +275,7 @@ export function AccountManagement({
               <input name="includeInNetWorth" type="checkbox" defaultChecked className={checkboxClassName()} />
               Património
             </label>
-            <SubmitButton>Criar conta</SubmitButton>
+            <SubmitButton pending={pendingActionId === "new"}>Criar conta</SubmitButton>
           </div>
         </form>
       </section>
@@ -155,11 +300,15 @@ export function AccountManagement({
             <tbody className="divide-y divide-slate-100">
               {accounts.map((account) => {
                 const formId = `account-${account.id}`;
+                const isPending = pendingActionId === account.id;
 
                 return (
                   <tr key={account.id} className="hover:bg-slate-50">
                     <td className="px-3 py-2">
-                      <form id={formId} action={updateAction} />
+                      <form
+                        id={formId}
+                        onSubmit={(event) => submitFormAction(event, updateAction, account.id)}
+                      />
                       <input form={formId} type="hidden" name="id" value={account.id} />
                       <input form={formId} name="name" required defaultValue={account.name} className={inputClassName()} />
                     </td>
@@ -244,38 +393,39 @@ export function AccountManagement({
                     <td className="px-3 py-2 text-slate-700">{accountStatus(account)}</td>
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap justify-end gap-2">
-                        <button form={formId} className={actionButtonClassName("primary")}>
+                        <button
+                          form={formId}
+                          type="submit"
+                          disabled={isPending}
+                          className={actionButtonClassName("primary")}
+                        >
                           Guardar
                         </button>
                         <input form={formId} type="hidden" name="archiveFromMonth" value={initialMonth} />
                         {account.archivedFromMonth ? (
                           <button
-                            form={formId}
-                            formAction={reactivateAction}
+                            type="button"
+                            disabled={isPending}
                             className={actionButtonClassName()}
-                            onClick={confirmation(`Reactivar a conta "${account.name}"?`)}
+                            onClick={() => runButtonAction(formId, reactivateAction, account.id)}
                           >
                             Reactivar
                           </button>
                         ) : (
                           <button
-                            form={formId}
-                            formAction={archiveAction}
+                            type="button"
+                            disabled={isPending}
                             className={actionButtonClassName()}
-                            onClick={confirmation(
-                              `Arquivar a conta "${account.name}" a partir de ${formatMonthLabel(initialMonth)}?`,
-                            )}
+                            onClick={() => runButtonAction(formId, archiveAction, account.id)}
                           >
                             Arquivar
                           </button>
                         )}
                         <button
-                          form={formId}
-                          formAction={deleteAction}
+                          type="button"
+                          disabled={isPending}
                           className={actionButtonClassName("danger")}
-                          onClick={confirmation(
-                            `Eliminar a conta "${account.name}"? Se já tiver movimentos, a eliminação será bloqueada.`,
-                          )}
+                          onClick={() => runButtonAction(formId, deleteAction, account.id)}
                         >
                           Eliminar
                         </button>
@@ -288,6 +438,7 @@ export function AccountManagement({
           </table>
         )}
       </section>
+      <HistoricalImpactModal prompt={historicalPrompt} />
     </div>
   );
 }

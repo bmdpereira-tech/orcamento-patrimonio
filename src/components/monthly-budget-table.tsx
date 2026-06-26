@@ -20,6 +20,11 @@ import { buildBudgetOverview, EDITABLE_BUDGET_ROW_KEYS } from "@/domain/budget/m
 import type { MonthlyDirectDebitOccurrence } from "@/domain/budget/recurring-rules";
 import { getAccountDisplayName, type LiquidityAccount } from "@/domain/budget/accounts";
 import {
+  isHistoricalImpactActionResult,
+  type HistoricalActionResult,
+  type HistoricalImpactRequiredActionResult,
+} from "@/domain/budget/historical-impact";
+import {
   formatEditableEuroCents,
   formatEuroCents,
   parseEuroCents,
@@ -30,9 +35,14 @@ import { FIRST_MONTH, type MonthId } from "@/domain/budget/months";
 import type { MonthlySalaryForecast } from "@/domain/budget/salary";
 import { cn } from "@/lib/cn";
 import { UI_TEXT } from "@/content/ui-text";
+import {
+  HistoricalImpactModal,
+  type HistoricalImpactPrompt,
+  withHistoricalImpactConfirmation,
+} from "./historical-impact-modal";
 
-type BudgetActionResult = { ok: true } | { ok: false; error: string };
-type AddCustomBudgetItemActionResult = { ok: true; item: MonthlyCustomBudgetItem } | { ok: false; error: string };
+type BudgetActionResult = HistoricalActionResult;
+type AddCustomBudgetItemActionResult = HistoricalActionResult<{ item: MonthlyCustomBudgetItem }>;
 type DirectDebitExclusionActionResult =
   | {
       ok: true;
@@ -42,7 +52,7 @@ type DirectDebitExclusionActionResult =
         excludedFromForecast: boolean;
       };
     }
-  | { ok: false; error: string };
+  | Extract<HistoricalActionResult, { ok: false }>;
 type CreditCardStatementOverrideActionResult =
   | {
       ok: true;
@@ -52,7 +62,7 @@ type CreditCardStatementOverrideActionResult =
         statementAmountCents: number | null;
       };
     }
-  | { ok: false; error: string };
+  | Extract<HistoricalActionResult, { ok: false }>;
 type SalaryMonthOverrideActionResult =
   | {
       ok: true;
@@ -61,7 +71,7 @@ type SalaryMonthOverrideActionResult =
         reflectedInCurrentBalance: boolean;
       };
     }
-  | { ok: false; error: string };
+  | Extract<HistoricalActionResult, { ok: false }>;
 
 type MonthlyBudgetTableProps = {
   overview: BudgetOverview;
@@ -159,8 +169,8 @@ function getSnapshotValue(snapshot: MonthlyAccountSnapshot, rowKey: EditableBudg
   switch (rowKey) {
     case "initial-balance":
       return snapshot.initialBalanceCents;
-    case "current-balance":
-      return snapshot.currentBalanceCents;
+    case "realised-movements":
+      return snapshot.realisedMovementsCents;
   }
 }
 
@@ -339,7 +349,8 @@ function calculateDisplayBudgetState({
       overview.month === FIRST_MONTH
         ? parseCurrencyInput(cellValues["initial-balance"][account.id] ?? "0")
         : sourceSnapshot?.initialBalanceCents ?? 0;
-    const currentBalanceCents = parseCurrencyInput(cellValues["current-balance"][account.id] ?? "0");
+    const realisedMovementsCents = parseCurrencyInput(cellValues["realised-movements"][account.id] ?? "0");
+    const currentBalanceCents = sumCents([initialBalanceCents, realisedMovementsCents]);
     const directDebitsCents = hasDirectDebitOccurrences
       ? directDebitAmountsByAccount.get(account.id) ?? 0
       : sourceSnapshot?.directDebitsCents ?? 0;
@@ -352,7 +363,6 @@ function calculateDisplayBudgetState({
     const manualForecastsCents = sumCents(
       customItems.map((item) => item.valuesByAccountId[account.id] ?? 0),
     );
-    const realisedMovementsCents = sumCents([currentBalanceCents, -initialBalanceCents]);
 
     return {
       accountId: account.id,
@@ -504,13 +514,17 @@ function EditableMoneyCell({
     return <>{formatEuroCents(displayValue)}</>;
   }
 
+  const parsedValue = tryParseCurrencyInput(value);
+  const shouldDisplayZeroAsDash = row.rowKey === "realised-movements" && parsedValue === 0;
+
   return (
     <input
-      value={value}
+      value={shouldDisplayZeroAsDash ? "" : value}
       onChange={(event) => onChange(event.target.value)}
       onBlur={onBlur}
       inputMode="decimal"
       aria-label={`${row.label} — ${accountName}`}
+      placeholder={row.rowKey === "realised-movements" ? "–" : undefined}
       className="h-6 w-full min-w-0 rounded border border-transparent bg-white/80 px-1 text-right tabular-nums text-slate-900 shadow-inner outline-none transition focus:border-brand-500 focus:bg-white focus:ring-1 focus:ring-brand-500"
     />
   );
@@ -904,6 +918,7 @@ export function MonthlyBudgetTable({
   const [salarySaveError, setSalarySaveError] = useState<string | null>(null);
   const [isAddingCustomItem, setIsAddingCustomItem] = useState(false);
   const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
+  const [historicalPrompt, setHistoricalPrompt] = useState<HistoricalImpactPrompt | null>(null);
 
   const overviewRef = useRef(overview);
   const cellValuesRef = useRef(cellValues);
@@ -927,6 +942,12 @@ export function MonthlyBudgetTable({
   const lastSavedSignatureRef = useRef(
     createSaveSignature({ overview, cellValues, customItems }),
   );
+  const lastSavedCellValuesRef = useRef(cellValues);
+  const lastSavedCustomItemsRef = useRef(customItems);
+  const lastSavedDirectDebitExclusionsRef = useRef(directDebitExclusions);
+  const lastSavedCreditCardOverrideValuesRef = useRef(creditCardOverrideValues);
+  const lastSavedCreditCardOverrideEnabledRef = useRef(creditCardOverrideEnabled);
+  const lastSavedSalaryReflectedRef = useRef(salaryReflected);
 
   const parsedCustomItems = useMemo(
     () => customItems.map((item) => parseCustomItemState(item, overview.accounts)),
@@ -1019,6 +1040,57 @@ export function MonthlyBudgetTable({
     setSalaryReflected(next);
   }, []);
 
+  const clearPendingAutosaves = useCallback(() => {
+    if (debounceTimeoutRef.current) {
+      clearTimeout(debounceTimeoutRef.current);
+      debounceTimeoutRef.current = null;
+    }
+
+    for (const timer of creditCardSaveTimersRef.current.values()) {
+      clearTimeout(timer);
+    }
+
+    creditCardSaveTimersRef.current.clear();
+    saveAfterCurrentRef.current = false;
+  }, []);
+
+  const restoreLastSavedTableState = useCallback(() => {
+    cellValuesRef.current = lastSavedCellValuesRef.current;
+    customItemsRef.current = lastSavedCustomItemsRef.current;
+    setCellValues(lastSavedCellValuesRef.current);
+    setCustomItems(lastSavedCustomItemsRef.current);
+    dirtyRef.current = false;
+    setSaveStatus("idle");
+    setSaveError(null);
+  }, []);
+
+  const openHistoricalConfirmation = useCallback(
+    (
+      impact: HistoricalImpactRequiredActionResult,
+      handlers: {
+        onCancel: () => void;
+        onConfirm: () => Promise<void>;
+      },
+    ) => {
+      clearPendingAutosaves();
+      setHistoricalPrompt({
+        firstAffectedMonth: impact.firstAffectedMonth,
+        message: impact.message,
+        onCancel: () => {
+          handlers.onCancel();
+          setHistoricalPrompt(null);
+        },
+        onConfirm: () => {
+          setHistoricalPrompt((current) => (current ? { ...current, isApplying: true } : current));
+          void handlers.onConfirm().finally(() => {
+            setHistoricalPrompt(null);
+          });
+        },
+      });
+    },
+    [clearPendingAutosaves],
+  );
+
   const getCreditCardStatementAmountForSave = useCallback((creditCardAccountId: string, overrideValue?: string) => {
     if (!creditCardOverrideEnabledRef.current[creditCardAccountId]) {
       return "";
@@ -1057,6 +1129,41 @@ export function MonthlyBudgetTable({
         return;
       }
 
+      if (isHistoricalImpactActionResult(result)) {
+        openHistoricalConfirmation(result, {
+          onCancel: () => {
+            updateSalaryReflected(() => lastSavedSalaryReflectedRef.current);
+            setSalarySaveStatus("idle");
+            setSalarySaveError(null);
+          },
+          onConfirm: async () => {
+            setSalarySaveStatus("saving");
+            setSalarySaveError(null);
+            const confirmedResult = await action(withHistoricalImpactConfirmation(formData));
+
+            if (isHistoricalImpactActionResult(confirmedResult)) {
+              updateSalaryReflected(() => lastSavedSalaryReflectedRef.current);
+              setSalarySaveStatus("error");
+              setSalarySaveError(confirmedResult.message);
+              return;
+            }
+
+            if (!confirmedResult.ok) {
+              updateSalaryReflected(() => lastSavedSalaryReflectedRef.current);
+              setSalarySaveStatus("error");
+              setSalarySaveError(confirmedResult.error);
+              return;
+            }
+
+            updateSalaryReflected(() => confirmedResult.override.reflectedInCurrentBalance);
+            lastSavedSalaryReflectedRef.current = confirmedResult.override.reflectedInCurrentBalance;
+            setSalarySaveStatus("saved");
+            setSalarySaveError(null);
+          },
+        });
+        return;
+      }
+
       if (!result.ok) {
         setSalarySaveStatus("error");
         setSalarySaveError(result.error);
@@ -1064,10 +1171,11 @@ export function MonthlyBudgetTable({
       }
 
       updateSalaryReflected(() => result.override.reflectedInCurrentBalance);
+      lastSavedSalaryReflectedRef.current = result.override.reflectedInCurrentBalance;
       setSalarySaveStatus("saved");
       setSalarySaveError(null);
     },
-    [updateSalaryReflected],
+    [openHistoricalConfirmation, updateSalaryReflected],
   );
 
   const flushCreditCardOverride = useCallback(
@@ -1109,6 +1217,56 @@ export function MonthlyBudgetTable({
         return;
       }
 
+      if (isHistoricalImpactActionResult(result)) {
+        openHistoricalConfirmation(result, {
+          onCancel: () => {
+            updateCreditCardOverrideValues(() => lastSavedCreditCardOverrideValuesRef.current);
+            updateCreditCardOverrideEnabled(() => lastSavedCreditCardOverrideEnabledRef.current);
+            setCreditCardSaveStatus("idle");
+            setCreditCardSaveError(null);
+          },
+          onConfirm: async () => {
+            setCreditCardSaveStatus("saving");
+            setCreditCardSaveError(null);
+            const confirmedResult = await action(withHistoricalImpactConfirmation(formData));
+
+            if (isHistoricalImpactActionResult(confirmedResult)) {
+              updateCreditCardOverrideValues(() => lastSavedCreditCardOverrideValuesRef.current);
+              updateCreditCardOverrideEnabled(() => lastSavedCreditCardOverrideEnabledRef.current);
+              setCreditCardSaveStatus("error");
+              setCreditCardSaveError(confirmedResult.message);
+              return;
+            }
+
+            if (!confirmedResult.ok) {
+              updateCreditCardOverrideValues(() => lastSavedCreditCardOverrideValuesRef.current);
+              updateCreditCardOverrideEnabled(() => lastSavedCreditCardOverrideEnabledRef.current);
+              setCreditCardSaveStatus("error");
+              setCreditCardSaveError(confirmedResult.error);
+              return;
+            }
+
+            updateCreditCardOverrideValues((current) => ({
+              ...current,
+              [confirmedResult.override.creditCardAccountId]:
+                confirmedResult.override.statementAmountCents === null
+                  ? ""
+                  : formatEditableEuroCents(confirmedResult.override.statementAmountCents),
+            }));
+            updateCreditCardOverrideEnabled((current) => ({
+              ...current,
+              [confirmedResult.override.creditCardAccountId]:
+                confirmedResult.override.statementAmountCents !== null,
+            }));
+            lastSavedCreditCardOverrideValuesRef.current = creditCardOverrideValuesRef.current;
+            lastSavedCreditCardOverrideEnabledRef.current = creditCardOverrideEnabledRef.current;
+            setCreditCardSaveStatus("saved");
+            setCreditCardSaveError(null);
+          },
+        });
+        return;
+      }
+
       if (!result.ok) {
         setCreditCardSaveStatus("error");
         setCreditCardSaveError(result.error);
@@ -1126,10 +1284,17 @@ export function MonthlyBudgetTable({
         ...current,
         [result.override.creditCardAccountId]: result.override.statementAmountCents !== null,
       }));
+      lastSavedCreditCardOverrideValuesRef.current = creditCardOverrideValuesRef.current;
+      lastSavedCreditCardOverrideEnabledRef.current = creditCardOverrideEnabledRef.current;
       setCreditCardSaveStatus("saved");
       setCreditCardSaveError(null);
     },
-    [getCreditCardStatementAmountForSave, updateCreditCardOverrideEnabled, updateCreditCardOverrideValues],
+    [
+      getCreditCardStatementAmountForSave,
+      openHistoricalConfirmation,
+      updateCreditCardOverrideEnabled,
+      updateCreditCardOverrideValues,
+    ],
   );
 
   const scheduleCreditCardOverrideSave = useCallback(
@@ -1200,13 +1365,45 @@ export function MonthlyBudgetTable({
         setSaveStatus("saving");
         setSaveError(null);
 
-        const result = await action(
-          buildSaveFormData({
-            overview: currentOverview,
-            cellValues: currentCellValues,
-            customItems: currentCustomItems,
-          }),
-        );
+        const formData = buildSaveFormData({
+          overview: currentOverview,
+          cellValues: currentCellValues,
+          customItems: currentCustomItems,
+        });
+        const result = await action(formData);
+
+        if (isHistoricalImpactActionResult(result)) {
+          openHistoricalConfirmation(result, {
+            onCancel: restoreLastSavedTableState,
+            onConfirm: async () => {
+              setSaveStatus("saving");
+              setSaveError(null);
+              const confirmedResult = await action(withHistoricalImpactConfirmation(formData));
+
+              if (isHistoricalImpactActionResult(confirmedResult)) {
+                setSaveStatus("error");
+                setSaveError(confirmedResult.message);
+                dirtyRef.current = true;
+                return;
+              }
+
+              if (!confirmedResult.ok) {
+                setSaveStatus("error");
+                setSaveError(confirmedResult.error);
+                dirtyRef.current = true;
+                return;
+              }
+
+              lastSavedSignatureRef.current = signature;
+              lastSavedCellValuesRef.current = currentCellValues;
+              lastSavedCustomItemsRef.current = currentCustomItems;
+              dirtyRef.current = false;
+              setSaveStatus("saved");
+              setSaveError(null);
+            },
+          });
+          break;
+        }
 
         if (!result.ok) {
           dirtyRef.current = true;
@@ -1216,6 +1413,8 @@ export function MonthlyBudgetTable({
         }
 
         lastSavedSignatureRef.current = signature;
+        lastSavedCellValuesRef.current = currentCellValues;
+        lastSavedCustomItemsRef.current = currentCustomItems;
 
         if (saveAfterCurrentRef.current || dirtyRef.current) {
           dirtyRef.current = true;
@@ -1233,7 +1432,7 @@ export function MonthlyBudgetTable({
     saveInFlightRef.current = savePromise;
 
     await savePromise;
-  }, []);
+  }, [openHistoricalConfirmation, restoreLastSavedTableState]);
 
   const scheduleSave = useCallback(() => {
     if (!editable || !saveBudgetActionRef.current) {
@@ -1378,6 +1577,54 @@ export function MonthlyBudgetTable({
     formData.set("month", overviewRef.current.month);
     const result = await addCustomItemAction(formData);
 
+    if (isHistoricalImpactActionResult(result)) {
+      openHistoricalConfirmation(result, {
+        onCancel: () => {
+          setIsAddingCustomItem(false);
+          setSaveStatus("idle");
+          setSaveError(null);
+        },
+        onConfirm: async () => {
+          setSaveStatus("saving");
+          setSaveError(null);
+          const confirmedResult = await addCustomItemAction(withHistoricalImpactConfirmation(formData));
+
+          if (isHistoricalImpactActionResult(confirmedResult)) {
+            setSaveStatus("error");
+            setSaveError(confirmedResult.message);
+            setIsAddingCustomItem(false);
+            return;
+          }
+
+          if (!confirmedResult.ok) {
+            setSaveStatus("error");
+            setSaveError(confirmedResult.error);
+            setIsAddingCustomItem(false);
+            return;
+          }
+
+          updateCustomItems((current) => {
+            const next = [
+              ...current,
+              createCustomItemState(confirmedResult.item, overviewRef.current.accounts),
+            ];
+            lastSavedCustomItemsRef.current = next;
+            return next;
+          });
+          lastSavedSignatureRef.current = createSaveSignature({
+            overview: overviewRef.current,
+            cellValues: cellValuesRef.current,
+            customItems: lastSavedCustomItemsRef.current,
+          });
+          dirtyRef.current = false;
+          setSaveStatus("saved");
+          setSaveError(null);
+          setIsAddingCustomItem(false);
+        },
+      });
+      return;
+    }
+
     if (!result.ok) {
       setSaveStatus("error");
       setSaveError(result.error);
@@ -1385,19 +1632,23 @@ export function MonthlyBudgetTable({
       return;
     }
 
-    updateCustomItems((current) => [
-      ...current,
-      createCustomItemState(result.item, overviewRef.current.accounts),
-    ]);
+    updateCustomItems((current) => {
+      const next = [
+        ...current,
+        createCustomItemState(result.item, overviewRef.current.accounts),
+      ];
+      lastSavedCustomItemsRef.current = next;
+      return next;
+    });
     lastSavedSignatureRef.current = createSaveSignature({
       overview: overviewRef.current,
       cellValues: cellValuesRef.current,
-      customItems: customItemsRef.current,
+      customItems: lastSavedCustomItemsRef.current,
     });
     dirtyRef.current = false;
     setSaveStatus("saved");
     setIsAddingCustomItem(false);
-  }, [addCustomItemAction, flushSave, isAddingCustomItem, updateCustomItems]);
+  }, [addCustomItemAction, flushSave, isAddingCustomItem, openHistoricalConfirmation, updateCustomItems]);
 
   const handleDeleteCustomItem = useCallback(
     async (itemId: string) => {
@@ -1422,6 +1673,51 @@ export function MonthlyBudgetTable({
       formData.set("customItemId", itemId);
       const result = await deleteCustomItemAction(formData);
 
+      if (isHistoricalImpactActionResult(result)) {
+        openHistoricalConfirmation(result, {
+          onCancel: () => {
+            setDeletingItemId(null);
+            setSaveStatus("idle");
+            setSaveError(null);
+          },
+          onConfirm: async () => {
+            setSaveStatus("saving");
+            setSaveError(null);
+            const confirmedResult = await deleteCustomItemAction(withHistoricalImpactConfirmation(formData));
+
+            if (isHistoricalImpactActionResult(confirmedResult)) {
+              setSaveStatus("error");
+              setSaveError(confirmedResult.message);
+              setDeletingItemId(null);
+              return;
+            }
+
+            if (!confirmedResult.ok) {
+              setSaveStatus("error");
+              setSaveError(confirmedResult.error);
+              setDeletingItemId(null);
+              return;
+            }
+
+            updateCustomItems((current) => {
+              const next = current.filter((item) => item.id !== itemId);
+              lastSavedCustomItemsRef.current = next;
+              return next;
+            });
+            lastSavedSignatureRef.current = createSaveSignature({
+              overview: overviewRef.current,
+              cellValues: cellValuesRef.current,
+              customItems: lastSavedCustomItemsRef.current,
+            });
+            dirtyRef.current = false;
+            setSaveStatus("saved");
+            setSaveError(null);
+            setDeletingItemId(null);
+          },
+        });
+        return;
+      }
+
       if (!result.ok) {
         setSaveStatus("error");
         setSaveError(result.error);
@@ -1429,18 +1725,22 @@ export function MonthlyBudgetTable({
         return;
       }
 
-      updateCustomItems((current) => current.filter((item) => item.id !== itemId));
+      updateCustomItems((current) => {
+        const next = current.filter((item) => item.id !== itemId);
+        lastSavedCustomItemsRef.current = next;
+        return next;
+      });
       lastSavedSignatureRef.current = createSaveSignature({
         overview: overviewRef.current,
         cellValues: cellValuesRef.current,
-        customItems: customItemsRef.current,
+        customItems: lastSavedCustomItemsRef.current,
       });
       dirtyRef.current = false;
       setSaveStatus("saved");
       setSaveError(null);
       setDeletingItemId(null);
     },
-    [deleteCustomItemAction, deletingItemId, flushSave, scheduleSave, updateCustomItems],
+    [deleteCustomItemAction, deletingItemId, flushSave, openHistoricalConfirmation, scheduleSave, updateCustomItems],
   );
 
   const handleDirectDebitToggle = useCallback(
@@ -1473,6 +1773,56 @@ export function MonthlyBudgetTable({
         return;
       }
 
+      if (isHistoricalImpactActionResult(result)) {
+        openHistoricalConfirmation(result, {
+          onCancel: () => {
+            updateDirectDebitExclusions((current) => ({
+              ...current,
+              [occurrence.ruleId]: previousValue,
+            }));
+            setDirectDebitSaveStatus("idle");
+            setDirectDebitSaveError(null);
+          },
+          onConfirm: async () => {
+            setDirectDebitSaveStatus("saving");
+            setDirectDebitSaveError(null);
+            const confirmedResult = await action(withHistoricalImpactConfirmation(formData));
+
+            if (isHistoricalImpactActionResult(confirmedResult)) {
+              updateDirectDebitExclusions((current) => ({
+                ...current,
+                [occurrence.ruleId]: previousValue,
+              }));
+              setDirectDebitSaveStatus("error");
+              setDirectDebitSaveError(confirmedResult.message);
+              return;
+            }
+
+            if (!confirmedResult.ok) {
+              updateDirectDebitExclusions((current) => ({
+                ...current,
+                [occurrence.ruleId]: previousValue,
+              }));
+              setDirectDebitSaveStatus("error");
+              setDirectDebitSaveError(confirmedResult.error);
+              return;
+            }
+
+            updateDirectDebitExclusions((current) => {
+              const next = {
+                ...current,
+                [occurrence.ruleId]: confirmedResult.state.excludedFromForecast,
+              };
+              lastSavedDirectDebitExclusionsRef.current = next;
+              return next;
+            });
+            setDirectDebitSaveStatus("saved");
+            setDirectDebitSaveError(null);
+          },
+        });
+        return;
+      }
+
       if (!result.ok) {
         updateDirectDebitExclusions((current) => ({
           ...current,
@@ -1483,14 +1833,18 @@ export function MonthlyBudgetTable({
         return;
       }
 
-      updateDirectDebitExclusions((current) => ({
-        ...current,
-        [occurrence.ruleId]: result.state.excludedFromForecast,
-      }));
+      updateDirectDebitExclusions((current) => {
+        const next = {
+          ...current,
+          [occurrence.ruleId]: result.state.excludedFromForecast,
+        };
+        lastSavedDirectDebitExclusionsRef.current = next;
+        return next;
+      });
       setDirectDebitSaveStatus("saved");
       setDirectDebitSaveError(null);
     },
-    [updateDirectDebitExclusions],
+    [openHistoricalConfirmation, updateDirectDebitExclusions],
   );
 
   useEffect(() => {
@@ -1524,6 +1878,12 @@ export function MonthlyBudgetTable({
     creditCardOverrideValuesRef.current = nextCreditCardOverrideValues;
     creditCardOverrideEnabledRef.current = nextCreditCardOverrideEnabled;
     salaryReflectedRef.current = nextSalaryReflected;
+    lastSavedCellValuesRef.current = nextCellValues;
+    lastSavedCustomItemsRef.current = nextCustomItems;
+    lastSavedDirectDebitExclusionsRef.current = nextDirectDebitExclusions;
+    lastSavedCreditCardOverrideValuesRef.current = nextCreditCardOverrideValues;
+    lastSavedCreditCardOverrideEnabledRef.current = nextCreditCardOverrideEnabled;
+    lastSavedSalaryReflectedRef.current = nextSalaryReflected;
     directDebitSaveVersionsRef.current.clear();
     creditCardSaveVersionsRef.current.clear();
     salarySaveVersionRef.current = 0;
@@ -1559,6 +1919,7 @@ export function MonthlyBudgetTable({
     setCreditCardSaveError(null);
     setSalarySaveStatus("idle");
     setSalarySaveError(null);
+    setHistoricalPrompt(null);
   }, [overview]);
 
   useEffect(() => {
@@ -1854,6 +2215,7 @@ export function MonthlyBudgetTable({
           }
         />
       </div>
+      <HistoricalImpactModal prompt={historicalPrompt} />
     </div>
   );
 }

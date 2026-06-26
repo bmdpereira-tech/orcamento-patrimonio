@@ -65,7 +65,7 @@ export type BudgetRowTone = "regular" | "section-end" | "subtotal" | "salary" | 
 
 export type EditableBudgetRowKey =
   | "initial-balance"
-  | "current-balance";
+  | "realised-movements";
 
 export type BudgetTableRow = {
   key: BudgetRowKey | `custom:${string}`;
@@ -180,7 +180,7 @@ const rowDefinitions: readonly {
 
 export const EDITABLE_BUDGET_ROW_KEYS: readonly EditableBudgetRowKey[] = [
   "initial-balance",
-  "current-balance",
+  "realised-movements",
 ];
 
 export function createEmptySnapshot(accountId: string): MonthlyAccountSnapshot {

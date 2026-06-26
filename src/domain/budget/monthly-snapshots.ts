@@ -13,6 +13,7 @@ export type AccountMonthState = {
   month: MonthId;
   initialBalanceOverrideCents: Cents | null;
   currentBalanceOverrideCents: Cents | null;
+  realisedMovementsOverrideCents?: Cents | null;
 };
 
 export type MonthlySystemSourceType = "direct_debits" | "day_to_day" | "credit_card_payments" | "salary";
@@ -57,6 +58,7 @@ function buildStateMap(states: readonly AccountMonthState[]) {
       {
         initialBalanceOverrideCents: state.initialBalanceOverrideCents,
         currentBalanceOverrideCents: state.currentBalanceOverrideCents,
+        realisedMovementsOverrideCents: state.realisedMovementsOverrideCents,
       },
     ]),
   );
@@ -101,8 +103,12 @@ export function buildSnapshotsForMonth({
         currentMonth === FIRST_MONTH
           ? state?.initialBalanceOverrideCents ?? 0
           : previousFinalByAccount.get(account.id) ?? 0;
-      const currentBalanceCents = state?.currentBalanceOverrideCents ?? initialBalanceCents;
-      const realisedMovementsCents = calculateRealisedMovements(currentBalanceCents, initialBalanceCents);
+      const realisedMovementsCents =
+        state?.realisedMovementsOverrideCents ??
+        (state?.currentBalanceOverrideCents === null || state?.currentBalanceOverrideCents === undefined
+          ? 0
+          : calculateRealisedMovements(state.currentBalanceOverrideCents, initialBalanceCents));
+      const currentBalanceCents = sumCents([initialBalanceCents, realisedMovementsCents]);
       const directDebitsCents = getMonthlySourceAmount(sourceAmounts, currentMonth, "direct_debits", account.id);
       const dayToDayCents = getMonthlySourceAmount(sourceAmounts, currentMonth, "day_to_day", account.id);
       const manualForecastsCents = getCustomForecastAmount(customItems, currentMonth, account.id);

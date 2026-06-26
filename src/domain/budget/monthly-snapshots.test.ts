@@ -44,7 +44,49 @@ describe("monthly snapshots", () => {
     expect(calculateRealisedMovements(320_00, 200_00)).toBe(120_00);
   });
 
-  it("uses the manually entered current balance and updates the final balance", () => {
+  it("calculates current balance from the manually entered realised movement", () => {
+    const [snapshot] = buildSnapshotsForMonth({
+      month: "2026-07",
+      accounts,
+      states: [
+        {
+          accountId: "account-a",
+          month: "2026-07",
+          initialBalanceOverrideCents: 100_00,
+          currentBalanceOverrideCents: null,
+          realisedMovementsOverrideCents: -15_00,
+        },
+      ],
+      sourceAmounts: new Map(),
+    });
+
+    expect(snapshot?.currentBalanceCents).toBe(85_00);
+    expect(snapshot?.realisedMovementsCents).toBe(-15_00);
+    expect(snapshot?.finalBalanceCents).toBe(85_00);
+  });
+
+  it("supports positive realised movements", () => {
+    const [snapshot] = buildSnapshotsForMonth({
+      month: "2026-07",
+      accounts,
+      states: [
+        {
+          accountId: "account-a",
+          month: "2026-07",
+          initialBalanceOverrideCents: 200_00,
+          currentBalanceOverrideCents: null,
+          realisedMovementsOverrideCents: 120_00,
+        },
+      ],
+      sourceAmounts: new Map(),
+    });
+
+    expect(snapshot?.currentBalanceCents).toBe(320_00);
+    expect(snapshot?.realisedMovementsCents).toBe(120_00);
+    expect(snapshot?.finalBalanceCents).toBe(320_00);
+  });
+
+  it("falls back to legacy current balance rows when no realised movement exists", () => {
     const [snapshot] = buildSnapshotsForMonth({
       month: "2026-07",
       accounts,
@@ -61,7 +103,6 @@ describe("monthly snapshots", () => {
 
     expect(snapshot?.currentBalanceCents).toBe(85_00);
     expect(snapshot?.realisedMovementsCents).toBe(-15_00);
-    expect(snapshot?.finalBalanceCents).toBe(85_00);
   });
 
   it("includes signed custom forecasts in the final balance", () => {
@@ -89,7 +130,8 @@ describe("monthly snapshots", () => {
           accountId: "account-a",
           month: "2026-07",
           initialBalanceOverrideCents: 100_00,
-          currentBalanceOverrideCents: 85_00,
+          currentBalanceOverrideCents: null,
+          realisedMovementsOverrideCents: -15_00,
         },
       ],
       sourceAmounts: new Map(),
@@ -109,7 +151,8 @@ describe("monthly snapshots", () => {
           accountId: "account-a",
           month: "2026-07",
           initialBalanceOverrideCents: 100_00,
-          currentBalanceOverrideCents: 100_00,
+          currentBalanceOverrideCents: null,
+          realisedMovementsOverrideCents: 0,
         },
       ],
       sourceAmounts: new Map([[monthlySourceAmountKey("2026-07", "direct_debits", "account-a"), -45_00]]),
@@ -128,7 +171,8 @@ describe("monthly snapshots", () => {
           accountId: "account-a",
           month: "2026-07",
           initialBalanceOverrideCents: 100_00,
-          currentBalanceOverrideCents: 100_00,
+          currentBalanceOverrideCents: null,
+          realisedMovementsOverrideCents: 0,
         },
       ],
       sourceAmounts: new Map([[monthlySourceAmountKey("2026-07", "day_to_day", "account-a"), -50_00]]),
@@ -147,7 +191,8 @@ describe("monthly snapshots", () => {
           accountId: "account-a",
           month: "2026-07",
           initialBalanceOverrideCents: 100_00,
-          currentBalanceOverrideCents: 100_00,
+          currentBalanceOverrideCents: null,
+          realisedMovementsOverrideCents: 0,
         },
       ],
       sourceAmounts: new Map([[monthlySourceAmountKey("2026-07", "salary", "account-a"), 3_000_00]]),
@@ -166,13 +211,15 @@ describe("monthly snapshots", () => {
           accountId: "account-a",
           month: "2026-07",
           initialBalanceOverrideCents: 1_000_00,
-          currentBalanceOverrideCents: 1_000_00,
+          currentBalanceOverrideCents: null,
+          realisedMovementsOverrideCents: 0,
         },
         {
           accountId: "cc-account-a",
           month: "2026-07",
           initialBalanceOverrideCents: 0,
-          currentBalanceOverrideCents: -125_00,
+          currentBalanceOverrideCents: null,
+          realisedMovementsOverrideCents: -125_00,
         },
       ],
       sourceAmounts: new Map(),
@@ -192,7 +239,8 @@ describe("monthly snapshots", () => {
           accountId: "cc-account-a",
           month: "2026-07",
           initialBalanceOverrideCents: 0,
-          currentBalanceOverrideCents: -125_00,
+          currentBalanceOverrideCents: null,
+          realisedMovementsOverrideCents: -125_00,
         },
       ],
       sourceAmounts: new Map(),
@@ -205,7 +253,8 @@ describe("monthly snapshots", () => {
           accountId: "cc-account-a",
           month: "2026-07",
           initialBalanceOverrideCents: 0,
-          currentBalanceOverrideCents: -125_00,
+          currentBalanceOverrideCents: null,
+          realisedMovementsOverrideCents: -125_00,
         },
       ],
       sourceAmounts: new Map(),
@@ -227,7 +276,8 @@ describe("monthly snapshots", () => {
           accountId: "cc-account-a",
           month: "2026-07",
           initialBalanceOverrideCents: 0,
-          currentBalanceOverrideCents: 0,
+          currentBalanceOverrideCents: null,
+          realisedMovementsOverrideCents: 0,
         },
       ],
       sourceAmounts: new Map([
@@ -265,7 +315,8 @@ describe("monthly snapshots", () => {
           accountId: "account-a",
           month: "2026-07",
           initialBalanceOverrideCents: 100_00,
-          currentBalanceOverrideCents: 100_00,
+          currentBalanceOverrideCents: null,
+          realisedMovementsOverrideCents: 0,
         },
       ],
       sourceAmounts: new Map(),
@@ -284,7 +335,8 @@ describe("monthly snapshots", () => {
           accountId: "account-a",
           month: "2026-07",
           initialBalanceOverrideCents: 100_00,
-          currentBalanceOverrideCents: 85_00,
+          currentBalanceOverrideCents: null,
+          realisedMovementsOverrideCents: -15_00,
         },
       ],
       sourceAmounts: new Map(),
@@ -297,13 +349,15 @@ describe("monthly snapshots", () => {
           accountId: "account-a",
           month: "2026-07",
           initialBalanceOverrideCents: 100_00,
-          currentBalanceOverrideCents: 85_00,
+          currentBalanceOverrideCents: null,
+          realisedMovementsOverrideCents: -15_00,
         },
         {
           accountId: "account-a",
           month: "2026-08",
           initialBalanceOverrideCents: null,
-          currentBalanceOverrideCents: 120_00,
+          currentBalanceOverrideCents: null,
+          realisedMovementsOverrideCents: 35_00,
         },
       ],
       sourceAmounts: new Map(),
@@ -313,5 +367,44 @@ describe("monthly snapshots", () => {
     expect(augustSnapshots[0]?.initialBalanceCents).toBe(85_00);
     expect(augustSnapshots[0]?.realisedMovementsCents).toBe(35_00);
     expect(augustSnapshots[0]?.finalBalanceCents).toBe(120_00);
+  });
+
+  it("keeps future months without movements at the transported initial balance and still forecasts final balance", () => {
+    const augustSnapshots = buildSnapshotsForMonth({
+      month: "2026-08",
+      accounts,
+      states: [
+        {
+          accountId: "account-a",
+          month: "2026-07",
+          initialBalanceOverrideCents: 100_00,
+          currentBalanceOverrideCents: null,
+          realisedMovementsOverrideCents: 20_00,
+        },
+      ],
+      sourceAmounts: new Map([[monthlySourceAmountKey("2026-08", "direct_debits", "account-a"), -25_00]]),
+    });
+    const septemberSnapshots = buildSnapshotsForMonth({
+      month: "2026-09",
+      accounts,
+      states: [
+        {
+          accountId: "account-a",
+          month: "2026-07",
+          initialBalanceOverrideCents: 100_00,
+          currentBalanceOverrideCents: null,
+          realisedMovementsOverrideCents: 20_00,
+        },
+      ],
+      sourceAmounts: new Map([[monthlySourceAmountKey("2026-08", "direct_debits", "account-a"), -25_00]]),
+    });
+
+    expect(augustSnapshots[0]?.initialBalanceCents).toBe(120_00);
+    expect(augustSnapshots[0]?.realisedMovementsCents).toBe(0);
+    expect(augustSnapshots[0]?.currentBalanceCents).toBe(120_00);
+    expect(augustSnapshots[0]?.finalBalanceCents).toBe(95_00);
+    expect(septemberSnapshots[0]?.initialBalanceCents).toBe(95_00);
+    expect(septemberSnapshots[0]?.realisedMovementsCents).toBe(0);
+    expect(septemberSnapshots[0]?.currentBalanceCents).toBe(95_00);
   });
 });

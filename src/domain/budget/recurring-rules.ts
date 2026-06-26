@@ -1,6 +1,7 @@
 import { daysInMonth, addMonths, FIRST_MONTH, type MonthId } from "./months";
 import { assertCents, sumCents, type Cents } from "./money";
 import { monthlySourceAmountKey } from "./monthly-snapshots";
+import { minMonth } from "./historical-impact";
 
 export type RecurringRuleFrequency = "monthly" | "quarterly" | "semiannual" | "annual";
 
@@ -232,7 +233,7 @@ export function canDeleteRecurringRule({
     };
   }
 
-  if (rule.startMonth <= referenceMonth) {
+  if (rule.startMonth < referenceMonth) {
     return {
       allowed: false,
       reason: "Este débito directo já pode afectar meses históricos. Arquive-o para preservar os dados.",
@@ -240,4 +241,83 @@ export function canDeleteRecurringRule({
   }
 
   return { allowed: true, reason: null };
+}
+
+function firstActiveMonth(rule: Pick<RecurringRule, "active" | "archivedAt" | "startMonth">) {
+  return rule.active && !rule.archivedAt ? rule.startMonth : null;
+}
+
+function firstChangedEndMonth({
+  previousStartMonth,
+  previousEndMonth,
+  nextStartMonth,
+  nextEndMonth,
+}: {
+  previousStartMonth: MonthId;
+  previousEndMonth?: MonthId;
+  nextStartMonth: MonthId;
+  nextEndMonth?: MonthId;
+}) {
+  if (previousEndMonth === nextEndMonth) {
+    return null;
+  }
+
+  if (!previousEndMonth && nextEndMonth) {
+    return addMonths(nextEndMonth, 1);
+  }
+
+  if (previousEndMonth && !nextEndMonth) {
+    return addMonths(previousEndMonth, 1);
+  }
+
+  if (!previousEndMonth || !nextEndMonth) {
+    return null;
+  }
+
+  const firstRangeMonth = minMonth(previousStartMonth, nextStartMonth);
+  const firstChangedMonth = addMonths(previousEndMonth < nextEndMonth ? previousEndMonth : nextEndMonth, 1);
+
+  return firstRangeMonth && firstChangedMonth < firstRangeMonth ? firstRangeMonth : firstChangedMonth;
+}
+
+export function getRecurringRuleChangeFirstAffectedMonth({
+  previous,
+  next,
+}: {
+  previous: RecurringRule;
+  next: RecurringRuleInput;
+}): MonthId | null {
+  const previousFirstActiveMonth = firstActiveMonth(previous);
+  const nextFirstActiveMonth = next.active ? next.startMonth : null;
+
+  if (!previousFirstActiveMonth && !nextFirstActiveMonth) {
+    return null;
+  }
+
+  if (previous.active !== next.active) {
+    return minMonth(previousFirstActiveMonth, nextFirstActiveMonth);
+  }
+
+  if (previous.frequency !== (next.frequency ?? "monthly")) {
+    return minMonth(previousFirstActiveMonth, nextFirstActiveMonth);
+  }
+
+  if (
+    previous.accountId !== next.accountId ||
+    previous.amountCents !== next.amountCents ||
+    previous.startMonth !== next.startMonth
+  ) {
+    return minMonth(previousFirstActiveMonth, nextFirstActiveMonth);
+  }
+
+  if (previous.active && next.active && !previous.archivedAt) {
+    return firstChangedEndMonth({
+      previousStartMonth: previous.startMonth,
+      previousEndMonth: previous.endMonth,
+      nextStartMonth: next.startMonth,
+      nextEndMonth: next.endMonth,
+    });
+  }
+
+  return null;
 }

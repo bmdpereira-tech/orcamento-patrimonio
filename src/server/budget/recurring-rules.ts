@@ -5,6 +5,7 @@ import { assertCents } from "@/domain/budget/money";
 import { FIRST_MONTH, getMonthIdForDate, toMonthStartDate, type MonthId } from "@/domain/budget/months";
 import {
   canDeleteRecurringRule,
+  getRecurringRuleChangeFirstAffectedMonth,
   validateRecurringRuleAccountSelection,
   validateRecurringRuleInput,
   type RecurringRule,
@@ -272,7 +273,7 @@ export async function setRecurringRuleMonthExcluded({
   return mapRecurringRuleMonthState(data as RecurringRuleMonthStateRow);
 }
 
-async function getRecurringRuleById(client: SupabaseClient, id: string) {
+export async function getRecurringRuleById(client: SupabaseClient, id: string) {
   const { data, error } = await client
     .from("recurring_rules")
     .select(RECURRING_RULE_SELECT)
@@ -284,6 +285,13 @@ async function getRecurringRuleById(client: SupabaseClient, id: string) {
   }
 
   return mapRecurringRule(data as RecurringRuleRow);
+}
+
+export async function getRecurringRuleFinancialImpactMonth(input: RecurringRuleInput & { id: string }) {
+  const client = createSupabaseAdminClient();
+  const existingRule = await getRecurringRuleById(client, input.id);
+
+  return getRecurringRuleChangeFirstAffectedMonth({ previous: existingRule, next: input });
 }
 
 async function recurringRuleHasOccurrenceOverrides(client: SupabaseClient, id: string) {
@@ -313,13 +321,18 @@ async function deleteRecurringRuleMonthStates(client: SupabaseClient, id: string
 export async function deleteRecurringRuleWhenAllowed(
   id: string,
   referenceMonth: MonthId = getMonthIdForDate(),
+  { allowHistoricalImpact = false }: { allowHistoricalImpact?: boolean } = {},
 ) {
   const client = createSupabaseAdminClient();
   const [rule, hasOccurrenceOverrides] = await Promise.all([
     getRecurringRuleById(client, id),
     recurringRuleHasOccurrenceOverrides(client, id),
   ]);
-  const permission = canDeleteRecurringRule({ rule, referenceMonth, hasOccurrenceOverrides });
+  const permission = hasOccurrenceOverrides
+    ? canDeleteRecurringRule({ rule, referenceMonth, hasOccurrenceOverrides })
+    : allowHistoricalImpact
+      ? { allowed: true, reason: null }
+      : canDeleteRecurringRule({ rule, referenceMonth, hasOccurrenceOverrides });
 
   if (!permission.allowed) {
     return { deleted: false, reason: permission.reason };

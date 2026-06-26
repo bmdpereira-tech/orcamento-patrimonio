@@ -1,26 +1,18 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
+import type { HistoricalActionResult } from "@/domain/budget/historical-impact";
 import { normaliseMonth } from "@/domain/budget/months";
 import { parseEuroCents } from "@/domain/budget/money";
 import { saveDailyBudgetVersion } from "@/server/budget/daily-budget";
+import { getHistoricalImpactActionResult } from "@/server/budget/historical-impact";
 import { saveSalaryVersion } from "@/server/budget/salary";
 
 function getText(formData: FormData, key: string) {
   return String(formData.get(key) ?? "").trim();
 }
 
-function redirectToSettings(status: string) {
-  redirect(`/configuracoes?status=${encodeURIComponent(status)}`);
-}
-
-function redirectToSettingsError(error: unknown) {
-  const message = error instanceof Error ? error.message : "Não foi possível guardar a configuração.";
-  redirect(`/configuracoes?erro=${encodeURIComponent(message)}`);
-}
-
-export async function saveDailyBudgetVersionAction(formData: FormData) {
+export async function saveDailyBudgetVersionAction(formData: FormData): Promise<HistoricalActionResult> {
   try {
     const accountId = getText(formData, "accountId");
     const effectiveFromMonthInput = getText(formData, "effectiveFromMonth");
@@ -29,18 +21,27 @@ export async function saveDailyBudgetVersionAction(formData: FormData) {
       throw new Error("Indique o mês de entrada em vigor.");
     }
 
+    const effectiveFromMonth = normaliseMonth(effectiveFromMonthInput);
+    const impactResult = getHistoricalImpactActionResult({ firstAffectedMonth: effectiveFromMonth, formData });
+
+    if (impactResult) {
+      return impactResult;
+    }
+
     await saveDailyBudgetVersion({
       accountId,
-      effectiveFromMonth: normaliseMonth(effectiveFromMonthInput),
+      effectiveFromMonth,
       dailyAmountCents: parseEuroCents(getText(formData, "dailyAmount")),
     });
     revalidatePath("/configuracoes");
     revalidatePath("/orcamento");
+    return { ok: true };
   } catch (error) {
-    redirectToSettingsError(error);
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Não foi possível guardar a configuração.",
+    };
   }
-
-  redirectToSettings("daily-budget-saved");
 }
 
 function parseMonthNumber(formData: FormData, key: string) {
@@ -53,7 +54,7 @@ function parseMonthNumber(formData: FormData, key: string) {
   return value;
 }
 
-export async function saveSalaryVersionAction(formData: FormData) {
+export async function saveSalaryVersionAction(formData: FormData): Promise<HistoricalActionResult> {
   try {
     const accountId = getText(formData, "accountId");
     const effectiveFromMonthInput = getText(formData, "effectiveFromMonth");
@@ -62,9 +63,16 @@ export async function saveSalaryVersionAction(formData: FormData) {
       throw new Error("Indique o mês de entrada em vigor.");
     }
 
+    const effectiveFromMonth = normaliseMonth(effectiveFromMonthInput);
+    const impactResult = getHistoricalImpactActionResult({ firstAffectedMonth: effectiveFromMonth, formData });
+
+    if (impactResult) {
+      return impactResult;
+    }
+
     await saveSalaryVersion({
       accountId,
-      effectiveFromMonth: normaliseMonth(effectiveFromMonthInput),
+      effectiveFromMonth,
       amountCents: parseEuroCents(getText(formData, "amount")),
       vacationBonusCents: parseEuroCents(getText(formData, "vacationBonus")),
       vacationBonusMonth: parseMonthNumber(formData, "vacationBonusMonth"),
@@ -73,9 +81,11 @@ export async function saveSalaryVersionAction(formData: FormData) {
     });
     revalidatePath("/configuracoes");
     revalidatePath("/orcamento");
+    return { ok: true };
   } catch (error) {
-    redirectToSettingsError(error);
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Não foi possível guardar a configuração.",
+    };
   }
-
-  redirectToSettings("salary-saved");
 }

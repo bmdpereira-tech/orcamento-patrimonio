@@ -3,20 +3,27 @@
 import { revalidatePath } from "next/cache";
 import { formatMonthLabel, normaliseMonth, type MonthId } from "@/domain/budget/months";
 import { parseEuroCents } from "@/domain/budget/money";
+import type { HistoricalActionResult } from "@/domain/budget/historical-impact";
 import {
   archiveRecurringRule,
   createRecurringRule,
   deleteRecurringRuleWhenAllowed,
+  getRecurringRuleById,
+  getRecurringRuleFinancialImpactMonth,
   reactivateRecurringRule,
   setRecurringRuleActive,
   updateRecurringRule,
 } from "@/server/budget/recurring-rules";
+import {
+  getHistoricalImpactActionResult,
+  hasHistoricalImpactConfirmation,
+} from "@/server/budget/historical-impact";
+import { createSupabaseAdminClient } from "@/server/supabase/client";
 
 const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 type RecurringRuleActionResult<T extends object = object> =
-  | ({ ok: true } & T)
-  | { ok: false; error: string };
+  HistoricalActionResult<T>;
 
 function getText(formData: FormData, key: string) {
   return String(formData.get(key) ?? "").trim();
@@ -84,7 +91,17 @@ function revalidateRecurringViews() {
 
 export async function createRecurringRuleAction(formData: FormData): Promise<RecurringRuleActionResult<{ rule: Awaited<ReturnType<typeof createRecurringRule>> }>> {
   try {
-    const rule = await createRecurringRule(parseRecurringRuleInput(formData));
+    const input = parseRecurringRuleInput(formData);
+    const impactResult = getHistoricalImpactActionResult({
+      firstAffectedMonth: input.active ? input.startMonth : null,
+      formData,
+    });
+
+    if (impactResult) {
+      return impactResult;
+    }
+
+    const rule = await createRecurringRule(input);
     revalidateRecurringViews();
 
     return { ok: true, rule };
@@ -104,7 +121,17 @@ export async function updateRecurringRuleAction(formData: FormData): Promise<Rec
       throw new Error("Débito directo inválido.");
     }
 
-    const rule = await updateRecurringRule({ ...parseRecurringRuleInput(formData), id });
+    const input = { ...parseRecurringRuleInput(formData), id };
+    const impactResult = getHistoricalImpactActionResult({
+      firstAffectedMonth: await getRecurringRuleFinancialImpactMonth(input),
+      formData,
+    });
+
+    if (impactResult) {
+      return impactResult;
+    }
+
+    const rule = await updateRecurringRule(input);
     revalidateRecurringViews();
 
     return { ok: true, rule };
@@ -122,6 +149,13 @@ export async function setRecurringRuleActiveAction(formData: FormData): Promise<
 
     if (!id) {
       throw new Error("Débito directo inválido.");
+    }
+
+    const existingRule = await getRecurringRuleById(createSupabaseAdminClient(), id);
+    const impactResult = getHistoricalImpactActionResult({ firstAffectedMonth: existingRule.startMonth, formData });
+
+    if (impactResult) {
+      return impactResult;
     }
 
     const rule = await setRecurringRuleActive(id, getText(formData, "active") === "true");
@@ -144,6 +178,13 @@ export async function archiveRecurringRuleAction(formData: FormData): Promise<Re
       throw new Error("Débito directo inválido.");
     }
 
+    const existingRule = await getRecurringRuleById(createSupabaseAdminClient(), id);
+    const impactResult = getHistoricalImpactActionResult({ firstAffectedMonth: existingRule.startMonth, formData });
+
+    if (impactResult) {
+      return impactResult;
+    }
+
     const rule = await archiveRecurringRule(id);
     revalidateRecurringViews();
 
@@ -162,6 +203,13 @@ export async function reactivateRecurringRuleAction(formData: FormData): Promise
 
     if (!id) {
       throw new Error("Débito directo inválido.");
+    }
+
+    const existingRule = await getRecurringRuleById(createSupabaseAdminClient(), id);
+    const impactResult = getHistoricalImpactActionResult({ firstAffectedMonth: existingRule.startMonth, formData });
+
+    if (impactResult) {
+      return impactResult;
     }
 
     const rule = await reactivateRecurringRule(id);
@@ -184,7 +232,16 @@ export async function deleteRecurringRuleAction(formData: FormData): Promise<Rec
       throw new Error("Débito directo inválido.");
     }
 
-    const result = await deleteRecurringRuleWhenAllowed(id);
+    const existingRule = await getRecurringRuleById(createSupabaseAdminClient(), id);
+    const impactResult = getHistoricalImpactActionResult({ firstAffectedMonth: existingRule.startMonth, formData });
+
+    if (impactResult) {
+      return impactResult;
+    }
+
+    const result = await deleteRecurringRuleWhenAllowed(id, undefined, {
+      allowHistoricalImpact: hasHistoricalImpactConfirmation(formData),
+    });
 
     if (!result.deleted) {
       throw new Error(result.reason ?? "Este débito directo não pode ser eliminado. Arquive-o em alternativa.");

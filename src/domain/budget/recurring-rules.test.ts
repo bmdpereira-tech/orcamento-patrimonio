@@ -4,6 +4,7 @@ import {
   buildRecurringDebitSourceAmountMap,
   buildRecurringRuleMonthStateMap,
   canDeleteRecurringRule,
+  getRecurringRuleChangeFirstAffectedMonth,
   getRecurringRuleChargeDate,
   isRecurringRuleApplicableToMonth,
   isRecurringRuleForecastedInMonth,
@@ -209,6 +210,10 @@ describe("recurring direct debit rules", () => {
       reason: null,
     });
     expect(canDeleteRecurringRule({ rule: baseRule, referenceMonth: "2026-07" })).toEqual({
+      allowed: true,
+      reason: null,
+    });
+    expect(canDeleteRecurringRule({ rule: baseRule, referenceMonth: "2026-08" })).toEqual({
       allowed: false,
       reason: "Este débito directo já pode afectar meses históricos. Arquive-o para preservar os dados.",
     });
@@ -216,5 +221,38 @@ describe("recurring direct debit rules", () => {
       allowed: false,
       reason: "Este débito directo tem excepções mensais associadas. Arquive-o para preservar o histórico.",
     });
+  });
+
+  it("detects only financial changes as historical-impact candidates", () => {
+    const previous = { ...baseRule, endMonth: "2026-12" as const };
+
+    expect(
+      getRecurringRuleChangeFirstAffectedMonth({
+        previous,
+        next: {
+          description: "Luz",
+          accountId: "santander",
+          amountCents: 120_00,
+          chargeDay: 1,
+          frequency: "monthly",
+          startMonth: "2026-07",
+          endMonth: "2026-12",
+          active: true,
+          sortOrder: 20,
+        },
+      }),
+    ).toBeNull();
+    expect(
+      getRecurringRuleChangeFirstAffectedMonth({
+        previous,
+        next: { ...baseInput, amountCents: 135_00, endMonth: "2026-12" },
+      }),
+    ).toBe("2026-07");
+    expect(
+      getRecurringRuleChangeFirstAffectedMonth({
+        previous,
+        next: { ...baseInput, endMonth: "2026-09" },
+      }),
+    ).toBe("2026-10");
   });
 });

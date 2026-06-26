@@ -1,6 +1,6 @@
 # PROJECT_CONTEXT.md
 
-> **Última actualização:** 25/06/2026  
+> **Última actualização:** 26/06/2026
 > **Projecto:** App Orçamento  
 > **Pasta local:** `C:\Users\brunopereira\OneDrive - Ever You\Apps\Orçamento`
 
@@ -226,6 +226,21 @@ Foram reutilizadas as estruturas existentes:
 
 Nota posterior: `salary_month_overrides.amount_cents` e `salary_month_overrides.account_id` continuam no schema por compatibilidade e para evitar migrations destrutivas, mas deixaram de ser usados pelos cálculos e pela interface de Salário.
 
+Foi também criada a migration incremental:
+
+```text
+20260701008000_account_month_realised_movements.sql
+```
+
+Esta migration acrescenta `realised_movements_override_cents` a `account_month_states`.
+
+Decisão funcional associada:
+
+- `Movimentos realizados` passou a ser o campo manual mensal por conta;
+- `Saldo actual` passou a ser calculado automaticamente como `Saldo inicial + Movimentos realizados`;
+- `current_balance_override_cents` permanece no schema por compatibilidade com dados antigos, mas deixou de ser a fonte de verdade nas novas gravações;
+- dados antigos em `current_balance_override_cents` são interpretados como fallback quando `realised_movements_override_cents` ainda não existe para esse mês/conta.
+
 Novas migrations devem:
 
 - ter timestamp posterior à última migration versionada;
@@ -305,10 +320,12 @@ Regras agora implementadas:
 
 - a aplicação não obriga ao registo de movimentos bancários individuais;
 - `actual_movements` permanece no schema, mas não é fonte activa dos cálculos;
-- `Saldo actual` é editável manualmente por conta e por mês;
-- `Saldo actual` é persistido em `account_month_states.current_balance_override_cents`;
-- `Movimentos realizados` é automático e read-only;
-- `Movimentos realizados = Saldo actual - Saldo inicial`;
+- `Movimentos realizados` é editável manualmente por conta e por mês;
+- `Movimentos realizados` é persistido em `account_month_states.realised_movements_override_cents`;
+- `Saldo actual` é automático e read-only;
+- `Saldo actual = Saldo inicial + Movimentos realizados`;
+- mês sem movimentos introduzidos usa `Movimentos realizados = 0` e `Saldo actual = Saldo inicial`;
+- novas gravações deixam `account_month_states.current_balance_override_cents` a `null`;
 - o transporte mensal continua a usar o saldo final do mês anterior como saldo inicial do mês seguinte;
 - a tab Histórico mostra uma visão mensal agregada, não uma lista de transacções;
 - o Histórico apresenta apenas meses anteriores ao mês actual, ordenados do mais recente para o mais antigo;
@@ -492,16 +509,60 @@ Nota de correcção final do bloco Salário em 26/06/2026:
 - o aviso amarelo do primeiro mês foi removido da página de Orçamento;
 - a regra interna de Julho de 2026 como primeiro mês mantém-se inalterada.
 
+Nota da implementação da protecção de alterações históricas em 26/06/2026:
+
+- foi criada uma função central de domínio para detectar impacto histórico em `Europe/Lisbon`;
+- uma alteração exige confirmação quando o primeiro mês financeiramente afectado é anterior ao mês actual em Lisboa;
+- a decisão devolve o primeiro mês afectado e a mensagem: `Esta alteração afecta [mês] e pode recalcular os saldos transportados dos meses seguintes. Pretende continuar?`;
+- as Server Actions aceitam `confirmHistoricalImpact=true` e voltam a validar antes de gravar;
+- sem confirmação, uma alteração histórica devolve resultado estruturado e não grava;
+- foi criado um modal próprio de confirmação, sem `window.confirm`;
+- o modal tem os botões `Cancelar` e `Aplicar alteração`;
+- cancelar repõe o estado anterior nos fluxos com actualização local imediata e cancela autosaves pendentes;
+- confirmar repete a operação com confirmação explícita;
+- a tabela mensal compara valores financeiros persistidos antes de decidir se há impacto histórico, permitindo alterações apenas de descrição/ordem sem alerta;
+- ficaram protegidos: Movimentos realizados em mês histórico, criação/eliminação/valores de linhas personalizadas, checklist mensal de Débitos directos, overrides de cartões, checkbox mensal de Salário, regras de Débitos directos com vigência/estado/montante/conta retroactivos, Configurações Day to day e Salário retroactivas, e alterações financeiras/arquivo/reactivação/eliminação de contas;
+- alterações sem impacto financeiro, como nome/descrição/ordem visual, não disparam alerta;
+- não foi criada migration nova.
+
+Validações técnicas deste bloco:
+
+- `npm.cmd run typecheck` passou;
+- `npm.cmd run lint` passou;
+- `npm.cmd run build` passou;
+- `git diff --check` passou, apenas com avisos CRLF já esperados;
+- `npm.cmd test` ficou bloqueado no sandbox pelo erro conhecido do Vitest/esbuild ao ler `vitest.config.ts` na pasta OneDrive (`Access is denied`);
+- a repetição com permissão elevada foi recusada pelo revisor automático por limite de uso, por isso a suite completa deve ser repetida localmente no PC.
+
+Nota da correcção da lógica central da tabela mensal em 26/06/2026:
+
+- `Movimentos realizados` passou a ser editável pelo utilizador na tabela mensal;
+- `Saldo actual` passou a ser automático e read-only;
+- a fórmula central é `Saldo actual = Saldo inicial + Movimentos realizados`;
+- meses futuros sem movimentos introduzidos mantêm `Movimentos realizados = 0` e `Saldo actual = Saldo inicial`;
+- as previsões continuam a calcular normalmente o `Saldo final`, que é transportado para o mês seguinte;
+- a persistência de novos movimentos usa `account_month_states.realised_movements_override_cents`;
+- novas gravações limpam `account_month_states.current_balance_override_cents`, que fica apenas como fallback de compatibilidade;
+- a protecção histórica foi adaptada para confirmar alterações a `Movimentos realizados` em meses passados;
+- cancelar a confirmação histórica repõe o movimento anterior e cancela autosaves pendentes.
+
+Validações técnicas desta correcção:
+
+- `npm.cmd run typecheck` passou;
+- `npm.cmd run lint` passou;
+- `npm.cmd run build` passou;
+- `git diff --check` passou, apenas com avisos CRLF já esperados;
+- `npm.cmd test` voltou a ficar bloqueado no sandbox pelo erro conhecido do Vitest/esbuild ao ler `vitest.config.ts` na pasta OneDrive (`Access is denied`).
+
 ### 10.2 Problemas ainda existentes
 
 A Fase 2 não está concluída.
 
 Problemas confirmados:
 
-- validar manualmente no browser, contra Supabase real, a configuração e persistência de Day to day;
-- validar manualmente no browser, contra Supabase real, overrides de pagamentos de cartões, incluindo zero e limpeza para automático;
-- aplicar a migration `20260701007000_salary_versions_allow_subsidies.sql` no Supabase antes de validar Salário em ambiente real;
-- validar manualmente no browser a configuração versionada de Salário, subsídios e checkbox `Já reflectido no saldo actual`;
+- aplicar as migrations `20260701007000_salary_versions_allow_subsidies.sql` e `20260701008000_account_month_realised_movements.sql` no Supabase antes de usar os blocos correspondentes contra uma base remota que ainda não as tenha recebido;
+- validar manualmente no browser a protecção de alterações históricas assim que existirem meses anteriores utilizáveis;
+- repetir localmente `npm.cmd test`, porque o ambiente Codex voltou a bloquear o Vitest/esbuild no sandbox e recusou a execução elevada;
 - confirmar em browser que mudanças de mês preservam autosaves pendentes e usam o mês correcto;
 - continuar a validar totais horizontais e cartões superiores contra cenários reais com várias contas/cartões;
 - a tab Investimentos ainda não está implementada funcionalmente.
@@ -531,30 +592,40 @@ O saldo transportado:
 
 ### 11.2 Saldo actual
 
-“Saldo actual” é introduzido manualmente pelo utilizador por conta e mês.
+“Saldo actual” é automático e apenas de leitura.
 
-Representa o saldo real visto no banco, cartão ou outra conta no momento da actualização.
-
-O valor:
-
-- é editável na tabela mensal;
-- aceita valores positivos, negativos e zero;
-- é persistido em `account_month_states.current_balance_override_cents`;
-- não depende de movimentos individuais.
-
-### 11.3 Movimentos realizados
-
-“Movimentos realizados” é automático e apenas de leitura.
+Representa o saldo resultante do saldo inicial transportado e do movimento agregado introduzido pelo utilizador.
 
 ```text
-Movimentos realizados = Saldo actual - Saldo inicial
+Saldo actual = Saldo inicial + Movimentos realizados
 ```
 
 Regras:
 
-- o utilizador nunca edita directamente esta linha;
-- alterações em `Saldo actual` actualizam esta diferença;
-- esta linha não usa `actual_movements`.
+- o utilizador não edita directamente esta linha;
+- actualiza imediatamente quando `Saldo inicial` ou `Movimentos realizados` mudam;
+- zero aparece como `–`;
+- `account_month_states.current_balance_override_cents` permanece apenas como fallback de compatibilidade para dados antigos.
+
+### 11.3 Movimentos realizados
+
+“Movimentos realizados” é introduzido manualmente pelo utilizador por conta e mês.
+
+```text
+Saldo actual = Saldo inicial + Movimentos realizados
+```
+
+Regras:
+
+- valor positivo aumenta o saldo;
+- valor negativo reduz o saldo;
+- campo vazio ou zero equivale a movimento zero;
+- aceita valores positivos, negativos e decimais;
+- é persistido em `account_month_states.realised_movements_override_cents`;
+- mês futuro sem movimento introduzido usa `Movimentos realizados = 0`;
+- não são gerados movimentos artificiais para meses futuros;
+- esta linha não usa `actual_movements`;
+- novas gravações deixam `account_month_states.current_balance_override_cents` a `null`.
 
 ### 11.4 Débitos directos
 
@@ -848,7 +919,7 @@ Um resultado válido igual a zero deve aparecer como:
 –
 ```
 
-Usar `–` para zero em visualização normal. Campos editáveis podem mostrar `0,00`.
+Usar `–` para zero em visualização normal. O campo editável de `Movimentos realizados` deve representar zero como campo vazio com placeholder `–`, mantendo campo vazio ou zero como movimento igual a zero.
 
 ## 12. Cartões superiores
 
@@ -1081,9 +1152,9 @@ npm.cmd run build
 
 Testes mínimos da Fase 2:
 
-- movimentos realizados automáticos; **coberto por diferença entre saldo actual e inicial**
+- movimentos realizados editáveis; **coberto por testes de componente e snapshots mensais**
 - entradas e saídas com sinal correcto; **coberto para linhas personalizadas**
-- saldo actual; **coberto como campo editável/manual**
+- saldo actual automático/read-only; **coberto como `Saldo inicial + Movimentos realizados`**
 - saldo inicial transportado; **coberto**
 - débitos directos; **coberto por testes de domínio, integração mensal e componente**
 - Day to day para mês passado, actual e futuro; **coberto por testes de domínio e integração mensal**
@@ -1098,9 +1169,9 @@ Testes mínimos da Fase 2:
 - totais horizontais; **coberto estruturalmente nas linhas automáticas e totais da tabela**
 - cartões coerentes; **coberto por testes de domínio, integração mensal e componente**
 - valores zero; **coberto**
-- persistência; **coberta estruturalmente via `budget_items`/`budget_allocations`; validar com Supabase real após migration**
+- persistência; **coberta estruturalmente via `account_month_states.realised_movements_override_cents` e `budget_items`/`budget_allocations`; validar com Supabase real após migration**
 - recálculo após refresh;
-- linhas calculadas não editáveis; **coberto para Movimentos realizados, Débitos directos, Day to day, Pagamentos de cartões e Salário**
+- linhas calculadas não editáveis; **coberto para Saldo actual, Débitos directos, Day to day, Pagamentos de cartões e Salário**
 - tabela compacta.
 
 ## 19. Comandos úteis
@@ -1151,12 +1222,11 @@ Antes de alterar qualquer ficheiro, lê integralmente PROJECT_CONTEXT.md e inspe
 
 O próximo trabalho deve continuar exclusivamente na Fase 2:
 
-1. aplicar no Supabase a migration `20260701007000_salary_versions_allow_subsidies.sql` com `npx.cmd supabase db push --dry-run` e depois `npx.cmd supabase db push`, se ainda não estiver aplicada;
-2. validar no browser a tab Configurações para Salário, incluindo conta, valores, meses dos subsídios e validação de meses iguais;
-3. validar no Orçamento que a linha `Salário` é automática, positiva, apenas de leitura e aparece só na conta configurada;
-4. validar mês normal, mês do subsídio de férias e mês do subsídio de Natal;
-5. validar a checkbox `Já reflectido no saldo actual`, refresh e independência entre meses;
-6. confirmar que não existem controlos de valor excepcional mensal no Salário;
-7. confirmar impacto no saldo final e mudança de mês depois de autosaves pendentes;
-8. criar commit Git se a validação manual for aprovada;
-9. só depois decidir o próximo bloco funcional da Fase 2, sem avançar para Investimentos antes da validação/commit.
+1. repetir localmente `npm.cmd test`, porque o ambiente Codex bloqueou a execução completa;
+2. validar no browser que alterações no mês actual e em meses futuros não abrem modal;
+3. quando existirem meses anteriores utilizáveis, validar que alterações financeiras históricas abrem o modal e que `Cancelar` não grava;
+4. validar que `Aplicar alteração` grava e recalcula os meses seguintes;
+5. validar que alterações apenas de descrição, nome ou ordem visual não disparam alerta;
+6. confirmar que os autosaves pendentes ficam suspensos enquanto o modal está aberto;
+7. criar commit Git se a validação manual for aprovada;
+8. só depois decidir o próximo bloco funcional da Fase 2, sem avançar para Investimentos antes da validação/commit.

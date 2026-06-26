@@ -1,17 +1,20 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
+import type { HistoricalActionResult } from "@/domain/budget/historical-impact";
 import { FIRST_MONTH, normaliseMonth, type MonthId } from "@/domain/budget/months";
 import {
   archiveAccount,
   createAccount,
   deleteAccountWhenAllowed,
+  getAccountById,
+  getAccountFinancialImpactMonth,
   isAccountType,
   reactivateAccount,
   updateAccount,
   type AccountInput,
 } from "@/server/budget/accounts";
+import { getHistoricalImpactActionResult } from "@/server/budget/historical-impact";
 
 function getText(formData: FormData, key: string) {
   return String(formData.get(key) ?? "").trim();
@@ -29,15 +32,6 @@ function getSortOrder(formData: FormData) {
   }
 
   return value;
-}
-
-function redirectToAccounts(status: string) {
-  redirect(`/contas?status=${encodeURIComponent(status)}`);
-}
-
-function redirectToAccountsError(error: unknown) {
-  const message = error instanceof Error ? error.message : "Ocorreu um erro ao guardar a conta.";
-  redirect(`/contas?erro=${encodeURIComponent(message)}`);
 }
 
 function parseAccountInput(formData: FormData): AccountInput {
@@ -72,18 +66,30 @@ function revalidateAccountViews() {
   revalidatePath("/orcamento");
 }
 
-export async function createAccountAction(formData: FormData) {
+export async function createAccountAction(formData: FormData): Promise<HistoricalActionResult<{ status: string }>> {
   try {
-    await createAccount(parseAccountInput(formData));
-    revalidateAccountViews();
-  } catch (error) {
-    redirectToAccountsError(error);
-  }
+    const input = parseAccountInput(formData);
+    const impactResult = getHistoricalImpactActionResult({
+      firstAffectedMonth: input.showInBudget || input.includeInNetWorth ? input.startMonth : null,
+      formData,
+    });
 
-  redirectToAccounts("created");
+    if (impactResult) {
+      return impactResult;
+    }
+
+    await createAccount(input);
+    revalidateAccountViews();
+    return { ok: true, status: "created" };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Ocorreu um erro ao guardar a conta.",
+    };
+  }
 }
 
-export async function updateAccountAction(formData: FormData) {
+export async function updateAccountAction(formData: FormData): Promise<HistoricalActionResult<{ status: string }>> {
   const id = getText(formData, "id");
 
   try {
@@ -91,16 +97,28 @@ export async function updateAccountAction(formData: FormData) {
       throw new Error("Conta inválida.");
     }
 
-    await updateAccount({ ...parseAccountInput(formData), id });
-    revalidateAccountViews();
-  } catch (error) {
-    redirectToAccountsError(error);
-  }
+    const input = { ...parseAccountInput(formData), id };
+    const impactResult = getHistoricalImpactActionResult({
+      firstAffectedMonth: await getAccountFinancialImpactMonth(input),
+      formData,
+    });
 
-  redirectToAccounts("updated");
+    if (impactResult) {
+      return impactResult;
+    }
+
+    await updateAccount(input);
+    revalidateAccountViews();
+    return { ok: true, status: "updated" };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Ocorreu um erro ao guardar a conta.",
+    };
+  }
 }
 
-export async function archiveAccountAction(formData: FormData) {
+export async function archiveAccountAction(formData: FormData): Promise<HistoricalActionResult<{ status: string }>> {
   const id = getText(formData, "id");
   const archiveFromMonth = normaliseMonth(getText(formData, "archiveFromMonth") || FIRST_MONTH) as MonthId;
 
@@ -109,16 +127,24 @@ export async function archiveAccountAction(formData: FormData) {
       throw new Error("Conta inválida.");
     }
 
+    const impactResult = getHistoricalImpactActionResult({ firstAffectedMonth: archiveFromMonth, formData });
+
+    if (impactResult) {
+      return impactResult;
+    }
+
     await archiveAccount(id, archiveFromMonth);
     revalidateAccountViews();
+    return { ok: true, status: "archived" };
   } catch (error) {
-    redirectToAccountsError(error);
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Ocorreu um erro ao guardar a conta.",
+    };
   }
-
-  redirectToAccounts("archived");
 }
 
-export async function reactivateAccountAction(formData: FormData) {
+export async function reactivateAccountAction(formData: FormData): Promise<HistoricalActionResult<{ status: string }>> {
   const id = getText(formData, "id");
 
   try {
@@ -126,16 +152,28 @@ export async function reactivateAccountAction(formData: FormData) {
       throw new Error("Conta inválida.");
     }
 
+    const account = await getAccountById(id);
+    const impactResult = getHistoricalImpactActionResult({
+      firstAffectedMonth: account.archivedFromMonth ?? account.startMonth,
+      formData,
+    });
+
+    if (impactResult) {
+      return impactResult;
+    }
+
     await reactivateAccount(id);
     revalidateAccountViews();
+    return { ok: true, status: "reactivated" };
   } catch (error) {
-    redirectToAccountsError(error);
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Ocorreu um erro ao guardar a conta.",
+    };
   }
-
-  redirectToAccounts("reactivated");
 }
 
-export async function deleteAccountAction(formData: FormData) {
+export async function deleteAccountAction(formData: FormData): Promise<HistoricalActionResult<{ status: string }>> {
   const id = getText(formData, "id");
   let status = "deleted";
 
@@ -144,15 +182,27 @@ export async function deleteAccountAction(formData: FormData) {
       throw new Error("Conta inválida.");
     }
 
+    const account = await getAccountById(id);
+    const impactResult = getHistoricalImpactActionResult({
+      firstAffectedMonth: account.startMonth,
+      formData,
+    });
+
+    if (impactResult) {
+      return impactResult;
+    }
+
     const deleted = await deleteAccountWhenAllowed(id);
     revalidateAccountViews();
 
     if (!deleted) {
       status = "delete-blocked";
     }
+    return { ok: true, status };
   } catch (error) {
-    redirectToAccountsError(error);
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Ocorreu um erro ao guardar a conta.",
+    };
   }
-
-  redirectToAccounts(status);
 }

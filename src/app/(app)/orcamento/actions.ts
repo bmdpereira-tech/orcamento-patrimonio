@@ -11,6 +11,7 @@ import {
 import {
   addCustomBudgetItem,
   deleteCustomBudgetItem,
+  getMonthlyBudgetFinancialChangeMonth,
   saveMonthlyBudgetValues,
   type CustomBudgetItemSaveInput,
 } from "@/server/budget/monthly-overview";
@@ -20,9 +21,11 @@ import {
 } from "@/server/budget/credit-card-payments";
 import { setRecurringRuleMonthExcluded } from "@/server/budget/recurring-rules";
 import { saveSalaryMonthState } from "@/server/budget/salary";
+import { getHistoricalImpactActionResult } from "@/server/budget/historical-impact";
+import type { HistoricalActionResult } from "@/domain/budget/historical-impact";
 
-type BudgetActionResult = { ok: true } | { ok: false; error: string };
-type AddCustomBudgetItemActionResult = { ok: true; item: MonthlyCustomBudgetItem } | { ok: false; error: string };
+type BudgetActionResult = HistoricalActionResult;
+type AddCustomBudgetItemActionResult = HistoricalActionResult<{ item: MonthlyCustomBudgetItem }>;
 type DirectDebitExclusionActionResult =
   | {
       ok: true;
@@ -32,7 +35,7 @@ type DirectDebitExclusionActionResult =
         excludedFromForecast: boolean;
       };
     }
-  | { ok: false; error: string };
+  | Extract<HistoricalActionResult, { ok: false }>;
 type CreditCardStatementOverrideActionResult =
   | {
       ok: true;
@@ -42,7 +45,7 @@ type CreditCardStatementOverrideActionResult =
         statementAmountCents: number | null;
       };
     }
-  | { ok: false; error: string };
+  | Extract<HistoricalActionResult, { ok: false }>;
 type SalaryMonthOverrideActionResult =
   | {
       ok: true;
@@ -51,7 +54,7 @@ type SalaryMonthOverrideActionResult =
         reflectedInCurrentBalance: boolean;
       };
     }
-  | { ok: false; error: string };
+  | Extract<HistoricalActionResult, { ok: false }>;
 
 function parseCustomItems(formData: FormData, accountIds: readonly string[]) {
   const itemIds = [
@@ -103,6 +106,14 @@ export async function saveMonthlyBudgetAction(formData: FormData): Promise<Budge
     }
 
     const customItems = parseCustomItems(formData, accountIds);
+    const impactResult = getHistoricalImpactActionResult({
+      firstAffectedMonth: await getMonthlyBudgetFinancialChangeMonth({ month, values, customItems }),
+      formData,
+    });
+
+    if (impactResult) {
+      return impactResult;
+    }
 
     await saveMonthlyBudgetValues({ month, values, customItems });
     revalidatePath("/orcamento");
@@ -117,6 +128,12 @@ export async function addCustomBudgetItemAction(formData: FormData): Promise<Add
   const month = normaliseMonth(String(formData.get("month") ?? ""));
 
   try {
+    const impactResult = getHistoricalImpactActionResult({ firstAffectedMonth: month, formData });
+
+    if (impactResult) {
+      return impactResult;
+    }
+
     const item = await addCustomBudgetItem(month);
     revalidatePath("/orcamento");
     return { ok: true, item };
@@ -133,6 +150,12 @@ export async function deleteCustomBudgetItemAction(formData: FormData): Promise<
   try {
     if (!id) {
       throw new Error("Linha personalizada inválida.");
+    }
+
+    const impactResult = getHistoricalImpactActionResult({ firstAffectedMonth: month, formData });
+
+    if (impactResult) {
+      return impactResult;
     }
 
     await deleteCustomBudgetItem(month, id);
@@ -154,6 +177,12 @@ export async function setDirectDebitForecastExclusionAction(
   try {
     if (!recurringRuleId) {
       throw new Error("Débito directo inválido.");
+    }
+
+    const impactResult = getHistoricalImpactActionResult({ firstAffectedMonth: month, formData });
+
+    if (impactResult) {
+      return impactResult;
     }
 
     const state = await setRecurringRuleMonthExcluded({
@@ -180,6 +209,12 @@ export async function setCreditCardStatementOverrideAction(
   try {
     if (!creditCardAccountId) {
       throw new Error("Cartão inválido.");
+    }
+
+    const impactResult = getHistoricalImpactActionResult({ firstAffectedMonth: month, formData });
+
+    if (impactResult) {
+      return impactResult;
     }
 
     if (!rawStatementAmount) {
@@ -221,6 +256,12 @@ export async function setSalaryMonthOverrideAction(
   const reflectedInCurrentBalance = String(formData.get("reflectedInCurrentBalance") ?? "false") === "true";
 
   try {
+    const impactResult = getHistoricalImpactActionResult({ firstAffectedMonth: month, formData });
+
+    if (impactResult) {
+      return impactResult;
+    }
+
     const result = await saveSalaryMonthState({
       month,
       reflectedInCurrentBalance,

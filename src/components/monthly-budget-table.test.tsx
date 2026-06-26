@@ -118,6 +118,18 @@ function expectCheckboxChecked(element: HTMLElement, checked: boolean) {
   expect((element as HTMLInputElement).checked).toBe(checked);
 }
 
+function historicalImpactResult(month: MonthId = "2026-08") {
+  return {
+    ok: false as const,
+    requiresConfirmation: true as const,
+    firstAffectedMonth: month,
+    monthLabel: "Agosto de 2026",
+    message:
+      "Esta alteração afecta Agosto de 2026 e pode recalcular os saldos transportados dos meses seguintes. Pretende continuar?",
+    affectsFollowingMonths: true as const,
+  };
+}
+
 function createOverview({
   currentBalanceCents = 75_00,
   currentBalanceByAccountId = {},
@@ -181,12 +193,55 @@ afterEach(() => {
 });
 
 describe("MonthlyBudgetTable", () => {
-  it("renders current balance as editable and realised movements as read-only", () => {
+  it("renders realised movements as editable and current balance as read-only", () => {
     render(<MonthlyBudgetTable overview={createOverview()} editable />);
 
-    expect(screen.queryByLabelText("Movimentos realizados — Conta A")).toBeNull();
-    expect(screen.getByLabelText("Saldo actual — Conta A")).toBeTruthy();
+    expect(screen.getByLabelText("Movimentos realizados — Conta A")).toBeTruthy();
+    expect(screen.queryByLabelText("Saldo actual — Conta A")).toBeNull();
     expect(screen.getByLabelText("Saldo inicial — Conta A")).toBeTruthy();
+  });
+
+  it("updates current and final balances from positive and negative realised movements", () => {
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({ currentBalanceCents: 100_00, directDebitsCents: -10_00 })}
+        editable
+      />,
+    );
+
+    const input = screen.getByLabelText("Movimentos realizados — Conta A");
+    expect((input as HTMLInputElement).value).toBe("");
+    expect((input as HTMLInputElement).placeholder).toBe("–");
+
+    fireEvent.change(input, { target: { value: "25,00" } });
+
+    expect(within(screen.getByRole("row", { name: /Saldo actual/ })).getAllByText("125,00 €").length).toBeGreaterThan(0);
+    expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("115,00 €").length).toBeGreaterThan(0);
+
+    fireEvent.change(input, { target: { value: "-30,00" } });
+
+    expect(within(screen.getByRole("row", { name: /Saldo actual/ })).getAllByText("70,00 €").length).toBeGreaterThan(0);
+    expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("60,00 €").length).toBeGreaterThan(0);
+  });
+
+  it("keeps a future month without realised movements at the initial balance while forecasting the final balance", () => {
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          month: "2026-12",
+          currentBalanceCents: 100_00,
+          directDebitsCents: -20_00,
+        })}
+        editable
+      />,
+    );
+
+    const input = screen.getByLabelText("Movimentos realizados — Conta A") as HTMLInputElement;
+
+    expect(input.value).toBe("");
+    expect(input.placeholder).toBe("–");
+    expect(within(screen.getByRole("row", { name: /Saldo actual/ })).getAllByText("100,00 €").length).toBeGreaterThan(0);
+    expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("80,00 €").length).toBeGreaterThan(0);
   });
 
   it("renders direct debits as automatic read-only values", () => {
@@ -795,12 +850,14 @@ describe("MonthlyBudgetTable", () => {
 
     render(<MonthlyBudgetTable overview={createOverview()} editable saveBudgetAction={saveBudgetAction} />);
 
-    const input = screen.getByLabelText("Saldo actual — Conta A");
+    const input = screen.getByLabelText("Movimentos realizados — Conta A");
     fireEvent.change(input, { target: { value: "80,00" } });
     fireEvent.blur(input);
 
     await waitFor(() => expect(saveBudgetAction).toHaveBeenCalledTimes(1));
-    expect((saveBudgetAction.mock.calls[0]?.[0] as FormData).get("cell:current-balance:account-a")).toBe("80,00");
+    expect((saveBudgetAction.mock.calls[0]?.[0] as FormData).get("cell:realised-movements:account-a")).toBe(
+      "80,00",
+    );
     expect(screen.getByText("Guardado")).toBeTruthy();
   });
 
@@ -810,7 +867,7 @@ describe("MonthlyBudgetTable", () => {
 
     render(<MonthlyBudgetTable overview={createOverview()} editable saveBudgetAction={saveBudgetAction} />);
 
-    const input = screen.getByLabelText("Saldo actual — Conta A");
+    const input = screen.getByLabelText("Movimentos realizados — Conta A");
     fireEvent.change(input, { target: { value: "80,00" } });
     fireEvent.change(input, { target: { value: "90,50" } });
 
@@ -826,7 +883,9 @@ describe("MonthlyBudgetTable", () => {
     });
 
     expect(saveBudgetAction).toHaveBeenCalledTimes(1);
-    expect((saveBudgetAction.mock.calls[0]?.[0] as FormData).get("cell:current-balance:account-a")).toBe("90,50");
+    expect((saveBudgetAction.mock.calls[0]?.[0] as FormData).get("cell:realised-movements:account-a")).toBe(
+      "90,50",
+    );
   });
 
   it("shows an autosave error state", async () => {
@@ -838,13 +897,69 @@ describe("MonthlyBudgetTable", () => {
 
     render(<MonthlyBudgetTable overview={createOverview()} editable saveBudgetAction={saveBudgetAction} />);
 
-    fireEvent.change(screen.getByLabelText("Saldo actual — Conta A"), { target: { value: "80,00" } });
+    fireEvent.change(screen.getByLabelText("Movimentos realizados — Conta A"), { target: { value: "80,00" } });
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(650);
     });
 
     expect(screen.getByText("Erro ao guardar")).toBeTruthy();
+  });
+
+  it("asks for confirmation before saving historical realised movements and cancel reverts local state", async () => {
+    vi.useFakeTimers();
+    const saveBudgetAction = vi.fn(async () => historicalImpactResult());
+
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({ month: "2026-08", currentBalanceCents: 75_00 })}
+        editable
+        saveBudgetAction={saveBudgetAction}
+      />,
+    );
+
+    const input = screen.getByLabelText("Movimentos realizados — Conta A") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "80,00" } });
+    fireEvent.blur(input);
+
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+    expect(screen.getByText(historicalImpactResult().message)).toBeTruthy();
+    expect(saveBudgetAction).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancelar" }));
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect((screen.getByLabelText("Movimentos realizados — Conta A") as HTMLInputElement).value).toBe("-25,00");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(saveBudgetAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("repeats a historical autosave with explicit confirmation", async () => {
+    const saveBudgetAction = vi
+      .fn()
+      .mockResolvedValueOnce(historicalImpactResult())
+      .mockResolvedValueOnce({ ok: true as const });
+
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({ month: "2026-08", currentBalanceCents: 75_00 })}
+        editable
+        saveBudgetAction={saveBudgetAction}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Movimentos realizados — Conta A"), { target: { value: "80,00" } });
+    fireEvent.blur(screen.getByLabelText("Movimentos realizados — Conta A"));
+
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Aplicar alteração" }));
+
+    await waitFor(() => expect(saveBudgetAction).toHaveBeenCalledTimes(2));
+    expect((saveBudgetAction.mock.calls[1]?.[0] as FormData).get("confirmHistoricalImpact")).toBe("true");
+    expect(screen.getByText("Guardado")).toBeTruthy();
   });
 
   it("creates a custom line with the returned id and deletes it by id only", async () => {
@@ -886,5 +1001,99 @@ describe("MonthlyBudgetTable", () => {
     await waitFor(() => expect(deleteCustomItemAction).toHaveBeenCalledTimes(1));
     expect((deleteCustomItemAction.mock.calls[0]?.[0] as FormData).get("customItemId")).toBe("server-id");
     expect(screen.queryByDisplayValue("Nova linha")).toBeNull();
+  });
+
+  it("protects monthly direct debit checklist changes with historical confirmation", async () => {
+    const setDirectDebitExcludedAction = vi
+      .fn()
+      .mockResolvedValueOnce(historicalImpactResult())
+      .mockImplementation(async (formData: FormData) => ({
+        ok: true as const,
+        state: {
+          recurringRuleId: String(formData.get("recurringRuleId")),
+          month: String(formData.get("month")),
+          excludedFromForecast: String(formData.get("excludedFromForecast")) === "true",
+        },
+      }));
+
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({ month: "2026-08", occurrences: [{ ...directDebitOccurrences[0], month: "2026-08" }] })}
+        editable
+        setDirectDebitExcludedAction={setDirectDebitExcludedAction}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText("Excluir Electricidade da previsão deste mês"));
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Aplicar alteração" }));
+
+    await waitFor(() => expect(setDirectDebitExcludedAction).toHaveBeenCalledTimes(2));
+    expect((setDirectDebitExcludedAction.mock.calls[1]?.[0] as FormData).get("confirmHistoricalImpact")).toBe(
+      "true",
+    );
+  });
+
+  it("reverts historical card overrides when the modal is cancelled", async () => {
+    const setCreditCardStatementOverrideAction = vi.fn(async () => historicalImpactResult());
+
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          month: "2026-08",
+          overviewAccounts: [accountA, creditCardAccount],
+          currentBalanceByAccountId: {
+            "account-a": 1_000_00,
+            "cc-santander": -125_00,
+          },
+        })}
+        editable
+        setCreditCardStatementOverrideAction={setCreditCardStatementOverrideAction}
+      />,
+    );
+
+    const overrideCheckbox = screen.getByLabelText("Usar valor do extracto — CC Santander");
+    fireEvent.click(overrideCheckbox);
+
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Cancelar" }));
+
+    expectCheckboxChecked(overrideCheckbox, false);
+    expect((screen.getByLabelText("Valor do extracto — CC Santander") as HTMLInputElement).disabled).toBe(true);
+    expect(setCreditCardStatementOverrideAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("protects the monthly salary reflected checkbox with historical confirmation", async () => {
+    const setSalaryMonthOverrideAction = vi
+      .fn()
+      .mockResolvedValueOnce(historicalImpactResult())
+      .mockImplementation(async (formData: FormData) => ({
+        ok: true as const,
+        override: {
+          month: String(formData.get("month")),
+          reflectedInCurrentBalance: String(formData.get("reflectedInCurrentBalance")) === "true",
+        },
+      }));
+
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          month: "2026-08",
+          salaryCents: 3_000_00,
+          salaryForecast: createSalaryForecast({ month: "2026-08", amountCents: 3_000_00 }),
+        })}
+        editable
+        setSalaryMonthOverrideAction={setSalaryMonthOverrideAction}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText("Já reflectido no saldo actual"));
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Aplicar alteração" }));
+
+    await waitFor(() => expect(setSalaryMonthOverrideAction).toHaveBeenCalledTimes(2));
+    expect((setSalaryMonthOverrideAction.mock.calls[1]?.[0] as FormData).get("confirmHistoricalImpact")).toBe(
+      "true",
+    );
   });
 });

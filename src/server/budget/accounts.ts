@@ -7,6 +7,7 @@ import {
   type AccountType,
   type LiquidityAccount,
 } from "@/domain/budget/accounts";
+import { minMonth } from "@/domain/budget/historical-impact";
 import { FIRST_MONTH, normaliseMonth, toMonthStartDate, type MonthId } from "@/domain/budget/months";
 import { createSupabaseAdminClient } from "@/server/supabase/client";
 
@@ -142,6 +143,33 @@ export async function updateAccount(input: AccountInput & { id: string }) {
   if (error) {
     throw new Error(`Não foi possível actualizar a conta: ${error.message}`);
   }
+}
+
+export async function getAccountById(id: string, client: SupabaseClient = createSupabaseAdminClient()) {
+  const { data, error } = await client.from("accounts").select(ACCOUNT_SELECT).eq("id", id).single();
+
+  if (error) {
+    throw new Error(`Não foi possível encontrar a conta: ${error.message}`);
+  }
+
+  return mapAccount(data as AccountRow);
+}
+
+export async function getAccountFinancialImpactMonth(input: AccountInput & { id: string }) {
+  const existing = await getAccountById(input.id);
+
+  if (
+    existing.accountType === input.accountType &&
+    existing.isCreditCard === input.isCreditCard &&
+    (existing.linkedPaymentAccountId ?? null) === (input.linkedPaymentAccountId ?? null) &&
+    existing.startMonth === input.startMonth &&
+    existing.showInBudget === input.showInBudget &&
+    existing.includeInNetWorth === input.includeInNetWorth
+  ) {
+    return null;
+  }
+
+  return minMonth(existing.startMonth, input.startMonth);
 }
 
 export async function archiveAccount(id: string, archiveFromMonth: MonthId = FIRST_MONTH as MonthId) {

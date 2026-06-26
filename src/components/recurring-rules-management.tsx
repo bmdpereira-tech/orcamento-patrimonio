@@ -3,13 +3,23 @@
 import { Archive, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getAccountDisplayName } from "@/domain/budget/accounts";
+import {
+  isHistoricalImpactActionResult,
+  type HistoricalActionResult,
+  type HistoricalImpactRequiredActionResult,
+} from "@/domain/budget/historical-impact";
 import { formatEditableEuroCents, formatEuroCents } from "@/domain/budget/money";
 import type { RecurringRule } from "@/domain/budget/recurring-rules";
 import type { ManagedAccount } from "@/server/budget/accounts";
 import { cn } from "@/lib/cn";
+import {
+  HistoricalImpactModal,
+  type HistoricalImpactPrompt,
+  withHistoricalImpactConfirmation,
+} from "./historical-impact-modal";
 
-type RuleActionResult = { ok: true; rule: RecurringRule } | { ok: false; error: string };
-type DeleteActionResult = { ok: true } | { ok: false; error: string };
+type RuleActionResult = HistoricalActionResult<{ rule: RecurringRule }>;
+type DeleteActionResult = HistoricalActionResult;
 
 type RecurringRulesManagementProps = {
   accounts: ManagedAccount[];
@@ -133,7 +143,9 @@ export function RecurringRulesManagement({
   const [message, setMessage] = useState<string | null>(null);
   const [pendingActionId, setPendingActionId] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+  const [historicalPrompt, setHistoricalPrompt] = useState<HistoricalImpactPrompt | null>(null);
   const rulesRef = useRef(localRules);
+  const lastSavedRulesRef = useRef(localRules);
   const timersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const saveVersionRef = useRef(new Map<string, number>());
   const dirtyRuleIdsRef = useRef(new Set<string>());
@@ -177,6 +189,9 @@ export function RecurringRulesManagement({
   const replaceRule = useCallback(
     (rule: RecurringRule) => {
       const nextRule = toLocalRule(rule);
+      lastSavedRulesRef.current = lastSavedRulesRef.current.some((item) => item.id === nextRule.id)
+        ? lastSavedRulesRef.current.map((item) => (item.id === nextRule.id ? nextRule : item))
+        : [...lastSavedRulesRef.current, nextRule];
 
       updateLocalRules((current) =>
         current.some((item) => item.id === nextRule.id)
@@ -196,6 +211,51 @@ export function RecurringRulesManagement({
     }
   }, []);
 
+  const restoreSavedRule = useCallback(
+    (id: string) => {
+      const savedRule = lastSavedRulesRef.current.find((rule) => rule.id === id);
+
+      if (!savedRule) {
+        return;
+      }
+
+      dirtyRuleIdsRef.current.delete(id);
+      updateLocalRules((current) => current.map((rule) => (rule.id === id ? savedRule : rule)));
+    },
+    [updateLocalRules],
+  );
+
+  const openHistoricalConfirmation = useCallback(
+    (
+      impact: HistoricalImpactRequiredActionResult,
+      handlers: {
+        onCancel: () => void;
+        onConfirm: () => Promise<void>;
+      },
+    ) => {
+      for (const timer of timersRef.current.values()) {
+        clearTimeout(timer);
+      }
+
+      timersRef.current.clear();
+      setHistoricalPrompt({
+        firstAffectedMonth: impact.firstAffectedMonth,
+        message: impact.message,
+        onCancel: () => {
+          handlers.onCancel();
+          setHistoricalPrompt(null);
+        },
+        onConfirm: () => {
+          setHistoricalPrompt((current) => (current ? { ...current, isApplying: true } : current));
+          void handlers.onConfirm().finally(() => {
+            setHistoricalPrompt(null);
+          });
+        },
+      });
+    },
+    [],
+  );
+
   const flushRule = useCallback(
     async (id: string) => {
       clearTimer(id);
@@ -211,9 +271,45 @@ export function RecurringRulesManagement({
       setSaveStatus("saving");
       setMessage(null);
 
-      const result = await updateAction(buildRuleFormData(rule));
+      const formData = buildRuleFormData(rule);
+      const result = await updateAction(formData);
 
       if (saveVersionRef.current.get(id) !== version) {
+        return;
+      }
+
+      if (isHistoricalImpactActionResult(result)) {
+        openHistoricalConfirmation(result, {
+          onCancel: () => {
+            restoreSavedRule(id);
+            setSaveStatus("idle");
+            setMessage(null);
+          },
+          onConfirm: async () => {
+            setSaveStatus("saving");
+            setMessage(null);
+            const confirmedResult = await updateAction(withHistoricalImpactConfirmation(formData));
+
+            if (isHistoricalImpactActionResult(confirmedResult)) {
+              restoreSavedRule(id);
+              setSaveStatus("error");
+              setMessage(confirmedResult.message);
+              return;
+            }
+
+            if (!confirmedResult.ok) {
+              restoreSavedRule(id);
+              setSaveStatus("error");
+              setMessage(confirmedResult.error);
+              return;
+            }
+
+            dirtyRuleIdsRef.current.delete(id);
+            replaceRule(confirmedResult.rule);
+            setSaveStatus("saved");
+            setMessage(null);
+          },
+        });
         return;
       }
 
@@ -228,7 +324,7 @@ export function RecurringRulesManagement({
       setSaveStatus("saved");
       setMessage(null);
     },
-    [clearTimer, replaceRule, updateAction],
+    [clearTimer, openHistoricalConfirmation, replaceRule, restoreSavedRule, updateAction],
   );
 
   const scheduleSave = useCallback(
@@ -267,6 +363,42 @@ export function RecurringRulesManagement({
 
       const result = await createAction(formData);
 
+      if (isHistoricalImpactActionResult(result)) {
+        openHistoricalConfirmation(result, {
+          onCancel: () => {
+            setIsCreating(false);
+            setSaveStatus("idle");
+            setMessage(null);
+          },
+          onConfirm: async () => {
+            setSaveStatus("saving");
+            setMessage(null);
+            const confirmedResult = await createAction(withHistoricalImpactConfirmation(formData));
+
+            if (isHistoricalImpactActionResult(confirmedResult)) {
+              setSaveStatus("error");
+              setMessage(confirmedResult.message);
+              setIsCreating(false);
+              return;
+            }
+
+            if (!confirmedResult.ok) {
+              setSaveStatus("error");
+              setMessage(confirmedResult.error);
+              setIsCreating(false);
+              return;
+            }
+
+            replaceRule(confirmedResult.rule);
+            form.reset();
+            setSaveStatus("saved");
+            setMessage(null);
+            setIsCreating(false);
+          },
+        });
+        return;
+      }
+
       if (!result.ok) {
         setSaveStatus("error");
         setMessage(result.error);
@@ -280,7 +412,7 @@ export function RecurringRulesManagement({
       setMessage(null);
       setIsCreating(false);
     },
-    [createAction, replaceRule],
+    [createAction, openHistoricalConfirmation, replaceRule],
   );
 
   const runRuleAction = useCallback(
@@ -290,7 +422,42 @@ export function RecurringRulesManagement({
       setSaveStatus("saving");
       setMessage(null);
 
-      const result = await action(simpleFormData(id, values));
+      const formData = simpleFormData(id, values);
+      const result = await action(formData);
+
+      if (isHistoricalImpactActionResult(result)) {
+        openHistoricalConfirmation(result, {
+          onCancel: () => {
+            setSaveStatus("idle");
+            setMessage(null);
+            setPendingActionId(null);
+          },
+          onConfirm: async () => {
+            setSaveStatus("saving");
+            setMessage(null);
+            const confirmedResult = await action(withHistoricalImpactConfirmation(formData));
+
+            if (isHistoricalImpactActionResult(confirmedResult)) {
+              setSaveStatus("error");
+              setMessage(confirmedResult.message);
+              setPendingActionId(null);
+              return;
+            }
+
+            if (!confirmedResult.ok) {
+              setSaveStatus("error");
+              setMessage(confirmedResult.error);
+              setPendingActionId(null);
+              return;
+            }
+
+            replaceRule(confirmedResult.rule);
+            setSaveStatus("saved");
+            setPendingActionId(null);
+          },
+        });
+        return;
+      }
 
       if (!result.ok) {
         setSaveStatus("error");
@@ -303,21 +470,53 @@ export function RecurringRulesManagement({
       setSaveStatus("saved");
       setPendingActionId(null);
     },
-    [flushRule, replaceRule],
+    [flushRule, openHistoricalConfirmation, replaceRule],
   );
 
   const handleDelete = useCallback(
     async (rule: LocalRecurringRule) => {
-      if (!window.confirm(`Eliminar o débito directo "${rule.description}"? Se já afectar histórico, será bloqueado.`)) {
-        return;
-      }
-
       await flushRule(rule.id);
       setPendingActionId(rule.id);
       setSaveStatus("saving");
       setMessage(null);
 
-      const result = await deleteAction(simpleFormData(rule.id));
+      const formData = simpleFormData(rule.id);
+      const result = await deleteAction(formData);
+
+      if (isHistoricalImpactActionResult(result)) {
+        openHistoricalConfirmation(result, {
+          onCancel: () => {
+            setSaveStatus("idle");
+            setMessage(null);
+            setPendingActionId(null);
+          },
+          onConfirm: async () => {
+            setSaveStatus("saving");
+            setMessage(null);
+            const confirmedResult = await deleteAction(withHistoricalImpactConfirmation(formData));
+
+            if (isHistoricalImpactActionResult(confirmedResult)) {
+              setSaveStatus("error");
+              setMessage(confirmedResult.message);
+              setPendingActionId(null);
+              return;
+            }
+
+            if (!confirmedResult.ok) {
+              setSaveStatus("error");
+              setMessage(confirmedResult.error);
+              setPendingActionId(null);
+              return;
+            }
+
+            updateLocalRules((current) => current.filter((item) => item.id !== rule.id));
+            lastSavedRulesRef.current = lastSavedRulesRef.current.filter((item) => item.id !== rule.id);
+            setSaveStatus("saved");
+            setPendingActionId(null);
+          },
+        });
+        return;
+      }
 
       if (!result.ok) {
         setSaveStatus("error");
@@ -327,16 +526,19 @@ export function RecurringRulesManagement({
       }
 
       updateLocalRules((current) => current.filter((item) => item.id !== rule.id));
+      lastSavedRulesRef.current = lastSavedRulesRef.current.filter((item) => item.id !== rule.id);
       setSaveStatus("saved");
       setPendingActionId(null);
     },
-    [deleteAction, flushRule, updateLocalRules],
+    [deleteAction, flushRule, openHistoricalConfirmation, updateLocalRules],
   );
 
   useEffect(() => {
     const nextRules = rules.map(toLocalRule);
     setLocalRules(nextRules);
     rulesRef.current = nextRules;
+    lastSavedRulesRef.current = nextRules;
+    setHistoricalPrompt(null);
   }, [rules]);
 
   useEffect(() => {
@@ -663,6 +865,7 @@ export function RecurringRulesManagement({
           </div>
         )}
       </section>
+      <HistoricalImpactModal prompt={historicalPrompt} />
     </div>
   );
 }
