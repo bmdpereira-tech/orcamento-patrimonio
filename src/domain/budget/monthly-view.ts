@@ -12,6 +12,7 @@ import type { DailyBudgetForecast } from "./daily-budget";
 import { type Cents, sumCents } from "./money";
 import type { MonthId } from "./months";
 import type { MonthlyDirectDebitOccurrence } from "./recurring-rules";
+import type { MonthlySalaryForecast } from "./salary";
 
 export type MonthlyAccountSnapshot = {
   accountId: string;
@@ -64,8 +65,7 @@ export type BudgetRowTone = "regular" | "section-end" | "subtotal" | "salary" | 
 
 export type EditableBudgetRowKey =
   | "initial-balance"
-  | "current-balance"
-  | "salary";
+  | "current-balance";
 
 export type BudgetTableRow = {
   key: BudgetRowKey | `custom:${string}`;
@@ -105,6 +105,7 @@ export type BudgetOverview = {
   directDebitOccurrences: MonthlyDirectDebitOccurrence[];
   dailyBudgetForecast: DailyBudgetForecast | null;
   creditCardPayments: MonthlyCreditCardPayment[];
+  salaryForecast: MonthlySalaryForecast | null;
   tableColumns: BudgetTableColumn[];
   tableSections: BudgetTableSection[];
   liquidityCurrentCents: Cents;
@@ -180,7 +181,6 @@ const rowDefinitions: readonly {
 export const EDITABLE_BUDGET_ROW_KEYS: readonly EditableBudgetRowKey[] = [
   "initial-balance",
   "current-balance",
-  "salary",
 ];
 
 export function createEmptySnapshot(accountId: string): MonthlyAccountSnapshot {
@@ -386,6 +386,7 @@ export function buildBudgetOverview({
   directDebitOccurrences = [],
   dailyBudgetForecast = null,
   creditCardPayments = [],
+  salaryForecast = null,
 }: {
   month: MonthId;
   accounts: readonly LiquidityAccount[];
@@ -395,6 +396,7 @@ export function buildBudgetOverview({
   directDebitOccurrences?: readonly MonthlyDirectDebitOccurrence[];
   dailyBudgetForecast?: DailyBudgetForecast | null;
   creditCardPayments?: readonly MonthlyCreditCardPayment[];
+  salaryForecast?: MonthlySalaryForecast | null;
 }): BudgetOverview {
   const liquidityCurrentCents = sumAccountSnapshots(accounts, snapshots, (snapshot) => snapshot.currentBalanceCents);
   const liquidityFinalCents = sumAccountSnapshots(accounts, snapshots, (snapshot) => snapshot.finalBalanceCents);
@@ -410,6 +412,7 @@ export function buildBudgetOverview({
     directDebitOccurrences: [...directDebitOccurrences],
     dailyBudgetForecast,
     creditCardPayments: [...creditCardPayments],
+    salaryForecast,
     tableColumns: createBudgetTableColumns(accounts),
     tableSections: buildBudgetTableSections(accounts, snapshots, customItems),
     liquidityCurrentCents,

@@ -27,6 +27,7 @@ import {
   type Cents,
 } from "@/domain/budget/money";
 import { FIRST_MONTH, type MonthId } from "@/domain/budget/months";
+import type { MonthlySalaryForecast } from "@/domain/budget/salary";
 import { cn } from "@/lib/cn";
 import { UI_TEXT } from "@/content/ui-text";
 
@@ -52,6 +53,15 @@ type CreditCardStatementOverrideActionResult =
       };
     }
   | { ok: false; error: string };
+type SalaryMonthOverrideActionResult =
+  | {
+      ok: true;
+      override: {
+        month: string;
+        reflectedInCurrentBalance: boolean;
+      };
+    }
+  | { ok: false; error: string };
 
 type MonthlyBudgetTableProps = {
   overview: BudgetOverview;
@@ -63,6 +73,7 @@ type MonthlyBudgetTableProps = {
   setCreditCardStatementOverrideAction?: (
     formData: FormData,
   ) => Promise<CreditCardStatementOverrideActionResult>;
+  setSalaryMonthOverrideAction?: (formData: FormData) => Promise<SalaryMonthOverrideActionResult>;
 };
 
 type EditableCellValues = Record<EditableBudgetRowKey, Record<string, string>>;
@@ -150,8 +161,6 @@ function getSnapshotValue(snapshot: MonthlyAccountSnapshot, rowKey: EditableBudg
       return snapshot.initialBalanceCents;
     case "current-balance":
       return snapshot.currentBalanceCents;
-    case "salary":
-      return snapshot.salaryCents;
   }
 }
 
@@ -222,6 +231,10 @@ function createCreditCardOverrideEnabledState(overview: BudgetOverview) {
   ) as Record<string, boolean>;
 }
 
+function createSalaryReflectedState(overview: BudgetOverview) {
+  return overview.salaryForecast?.reflectedInCurrentBalance ?? false;
+}
+
 function buildCreditCardStatementOverrides(
   month: MonthId,
   overrideValues: Readonly<Record<string, string>>,
@@ -240,6 +253,26 @@ function buildCreditCardStatementOverrides(
 
     return [{ creditCardAccountId, month, statementAmountCents }];
   });
+}
+
+function calculateDisplaySalaryForecast({
+  forecast,
+  reflectedInCurrentBalance,
+}: {
+  forecast: MonthlySalaryForecast | null;
+  reflectedInCurrentBalance: boolean;
+}): MonthlySalaryForecast | null {
+  if (!forecast) {
+    return null;
+  }
+
+  return {
+    ...forecast,
+    amountBeforeStatusCents: forecast.baseAmountCents,
+    amountCents: reflectedInCurrentBalance ? 0 : forecast.baseAmountCents,
+    reflectedInCurrentBalance,
+    status: reflectedInCurrentBalance ? "received" : "planned",
+  };
 }
 
 function calculateDirectDebitAmountsByAccount(
@@ -279,6 +312,7 @@ function calculateDisplayBudgetState({
   directDebitExclusions,
   creditCardOverrideValues,
   creditCardOverrideEnabled,
+  salaryReflected,
 }: {
   overview: BudgetOverview;
   cellValues: EditableCellValues;
@@ -286,9 +320,14 @@ function calculateDisplayBudgetState({
   directDebitExclusions: Readonly<Record<string, boolean>>;
   creditCardOverrideValues: Readonly<Record<string, string>>;
   creditCardOverrideEnabled: Readonly<Record<string, boolean>>;
+  salaryReflected: boolean;
 }) {
   const snapshotByAccountId = new Map(overview.snapshots.map((snapshot) => [snapshot.accountId, snapshot]));
   const hasDirectDebitOccurrences = overview.directDebitOccurrences.length > 0;
+  const salaryForecast = calculateDisplaySalaryForecast({
+    forecast: overview.salaryForecast,
+    reflectedInCurrentBalance: salaryReflected,
+  });
   const directDebitAmountsByAccount = calculateDirectDebitAmountsByAccount(
     overview.directDebitOccurrences,
     directDebitExclusions,
@@ -305,7 +344,11 @@ function calculateDisplayBudgetState({
       ? directDebitAmountsByAccount.get(account.id) ?? 0
       : sourceSnapshot?.directDebitsCents ?? 0;
     const dayToDayCents = sourceSnapshot?.dayToDayCents ?? 0;
-    const salaryCents = parseCurrencyInput(cellValues.salary[account.id] ?? "0");
+    const salaryCents = salaryForecast
+      ? salaryForecast.accountId === account.id
+        ? salaryForecast.amountCents
+        : 0
+      : sourceSnapshot?.salaryCents ?? 0;
     const manualForecastsCents = sumCents(
       customItems.map((item) => item.valuesByAccountId[account.id] ?? 0),
     );
@@ -354,7 +397,7 @@ function calculateDisplayBudgetState({
     };
   });
 
-  return { snapshots, creditCardPayments };
+  return { snapshots, creditCardPayments, salaryForecast };
 }
 
 function buildSaveFormData({
@@ -765,6 +808,72 @@ function MonthlyCreditCardPaymentCards({
   );
 }
 
+function MonthlySalaryControl({
+  forecast,
+  editable,
+  reflectedInCurrentBalance,
+  saveStatus,
+  saveError,
+  onToggleReflected,
+}: {
+  forecast: MonthlySalaryForecast | null;
+  editable: boolean;
+  reflectedInCurrentBalance: boolean;
+  saveStatus: SaveStatus;
+  saveError: string | null;
+  onToggleReflected: (checked: boolean) => void;
+}) {
+  const statusLabel =
+    saveStatus === "saving"
+      ? "A guardar…"
+      : saveStatus === "saved"
+        ? "Guardado"
+        : saveStatus === "error"
+          ? "Erro ao guardar"
+          : null;
+  const controlsDisabled = !editable || !forecast?.accountId;
+
+  return (
+    <section
+      data-testid="monthly-salary-control"
+      className="w-full max-w-2xl rounded-lg border border-slate-200 bg-white p-3 shadow-sm"
+    >
+      <div className="grid gap-2 sm:grid-cols-[auto_auto_1fr_auto] sm:items-center">
+        <h2 className="text-sm font-semibold text-slate-950">Salário do mês</h2>
+        <p className="text-sm font-semibold tabular-nums text-slate-950">
+          {formatEuroCents(forecast?.amountBeforeStatusCents ?? 0)}
+        </p>
+        <label className="inline-flex items-center gap-2 whitespace-nowrap text-sm font-medium text-slate-700">
+          <input
+            type="checkbox"
+            checked={reflectedInCurrentBalance}
+            disabled={controlsDisabled}
+            onChange={(event) => onToggleReflected(event.target.checked)}
+            aria-label="Já reflectido no saldo actual"
+            className="h-4 w-4 rounded border-slate-300 text-brand-700 focus:ring-brand-600 disabled:opacity-60"
+          />
+          Já reflectido no saldo actual
+        </label>
+        {statusLabel ? (
+          <p
+            aria-live="polite"
+            title={saveError ?? undefined}
+            className={cn(
+              "text-xs font-medium",
+              saveStatus === "error" ? "text-red-700" : "text-slate-500",
+            )}
+          >
+            {statusLabel}
+          </p>
+        ) : null}
+      </div>
+      {saveError && saveStatus === "error" ? (
+        <div className="mt-2 rounded-md border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-800">{saveError}</div>
+      ) : null}
+    </section>
+  );
+}
+
 export function MonthlyBudgetTable({
   overview,
   editable = false,
@@ -773,6 +882,7 @@ export function MonthlyBudgetTable({
   deleteCustomItemAction,
   setDirectDebitExcludedAction,
   setCreditCardStatementOverrideAction,
+  setSalaryMonthOverrideAction,
 }: MonthlyBudgetTableProps) {
   const [cellValues, setCellValues] = useState(() => createEditableCellValues(overview));
   const [customItems, setCustomItems] = useState(() => createCustomItemStates(overview));
@@ -789,6 +899,9 @@ export function MonthlyBudgetTable({
   );
   const [creditCardSaveStatus, setCreditCardSaveStatus] = useState<SaveStatus>("idle");
   const [creditCardSaveError, setCreditCardSaveError] = useState<string | null>(null);
+  const [salaryReflected, setSalaryReflected] = useState(() => createSalaryReflectedState(overview));
+  const [salarySaveStatus, setSalarySaveStatus] = useState<SaveStatus>("idle");
+  const [salarySaveError, setSalarySaveError] = useState<string | null>(null);
   const [isAddingCustomItem, setIsAddingCustomItem] = useState(false);
   const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
 
@@ -798,12 +911,15 @@ export function MonthlyBudgetTable({
   const directDebitExclusionsRef = useRef(directDebitExclusions);
   const creditCardOverrideValuesRef = useRef(creditCardOverrideValues);
   const creditCardOverrideEnabledRef = useRef(creditCardOverrideEnabled);
+  const salaryReflectedRef = useRef(salaryReflected);
   const directDebitSaveVersionsRef = useRef(new Map<string, number>());
   const creditCardSaveVersionsRef = useRef(new Map<string, number>());
   const creditCardSaveTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const salarySaveVersionRef = useRef(0);
   const saveBudgetActionRef = useRef(saveBudgetAction);
   const setDirectDebitExcludedActionRef = useRef(setDirectDebitExcludedAction);
   const setCreditCardStatementOverrideActionRef = useRef(setCreditCardStatementOverrideAction);
+  const setSalaryMonthOverrideActionRef = useRef(setSalaryMonthOverrideAction);
   const debounceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveInFlightRef = useRef<Promise<void> | null>(null);
   const saveAfterCurrentRef = useRef(false);
@@ -824,6 +940,7 @@ export function MonthlyBudgetTable({
       directDebitExclusions,
       creditCardOverrideValues,
       creditCardOverrideEnabled,
+      salaryReflected,
     });
 
     return buildBudgetOverview({
@@ -835,6 +952,7 @@ export function MonthlyBudgetTable({
       directDebitOccurrences: overview.directDebitOccurrences,
       dailyBudgetForecast: overview.dailyBudgetForecast,
       creditCardPayments: displayState.creditCardPayments,
+      salaryForecast: displayState.salaryForecast,
     });
   }, [
     cellValues,
@@ -843,6 +961,7 @@ export function MonthlyBudgetTable({
     directDebitExclusions,
     overview,
     parsedCustomItems,
+    salaryReflected,
   ]);
   const customItemById = useMemo(
     () => new Map(customItems.map((item) => [item.id, item])),
@@ -894,6 +1013,12 @@ export function MonthlyBudgetTable({
     [],
   );
 
+  const updateSalaryReflected = useCallback((updater: (current: boolean) => boolean) => {
+    const next = updater(salaryReflectedRef.current);
+    salaryReflectedRef.current = next;
+    setSalaryReflected(next);
+  }, []);
+
   const getCreditCardStatementAmountForSave = useCallback((creditCardAccountId: string, overrideValue?: string) => {
     if (!creditCardOverrideEnabledRef.current[creditCardAccountId]) {
       return "";
@@ -908,6 +1033,42 @@ export function MonthlyBudgetTable({
 
     return value.trim() || "0,00";
   }, []);
+
+  const flushSalaryMonthState = useCallback(
+    async () => {
+      const action = setSalaryMonthOverrideActionRef.current;
+
+      if (!action) {
+        return;
+      }
+
+      const version = salarySaveVersionRef.current + 1;
+      salarySaveVersionRef.current = version;
+      setSalarySaveStatus("saving");
+      setSalarySaveError(null);
+
+      const formData = new FormData();
+      formData.set("month", overviewRef.current.month);
+      formData.set("reflectedInCurrentBalance", String(salaryReflectedRef.current));
+
+      const result = await action(formData);
+
+      if (salarySaveVersionRef.current !== version) {
+        return;
+      }
+
+      if (!result.ok) {
+        setSalarySaveStatus("error");
+        setSalarySaveError(result.error);
+        return;
+      }
+
+      updateSalaryReflected(() => result.override.reflectedInCurrentBalance);
+      setSalarySaveStatus("saved");
+      setSalarySaveError(null);
+    },
+    [updateSalaryReflected],
+  );
 
   const flushCreditCardOverride = useCallback(
     async (creditCardAccountId: string, overrideValue?: string) => {
@@ -1195,6 +1356,14 @@ export function MonthlyBudgetTable({
     [flushCreditCardOverride, updateCreditCardOverrideEnabled, updateCreditCardOverrideValues],
   );
 
+  const handleSalaryReflectedToggle = useCallback(
+    (checked: boolean) => {
+      updateSalaryReflected(() => checked);
+      void flushSalaryMonthState();
+    },
+    [flushSalaryMonthState, updateSalaryReflected],
+  );
+
   const handleAddCustomItem = useCallback(async () => {
     if (!addCustomItemAction || isAddingCustomItem) {
       return;
@@ -1337,11 +1506,16 @@ export function MonthlyBudgetTable({
   }, [setCreditCardStatementOverrideAction]);
 
   useEffect(() => {
+    setSalaryMonthOverrideActionRef.current = setSalaryMonthOverrideAction;
+  }, [setSalaryMonthOverrideAction]);
+
+  useEffect(() => {
     const nextCellValues = createEditableCellValues(overview);
     const nextCustomItems = createCustomItemStates(overview);
     const nextDirectDebitExclusions = createDirectDebitExclusionState(overview);
     const nextCreditCardOverrideValues = createCreditCardOverrideValues(overview);
     const nextCreditCardOverrideEnabled = createCreditCardOverrideEnabledState(overview);
+    const nextSalaryReflected = createSalaryReflectedState(overview);
 
     overviewRef.current = overview;
     cellValuesRef.current = nextCellValues;
@@ -1349,8 +1523,10 @@ export function MonthlyBudgetTable({
     directDebitExclusionsRef.current = nextDirectDebitExclusions;
     creditCardOverrideValuesRef.current = nextCreditCardOverrideValues;
     creditCardOverrideEnabledRef.current = nextCreditCardOverrideEnabled;
+    salaryReflectedRef.current = nextSalaryReflected;
     directDebitSaveVersionsRef.current.clear();
     creditCardSaveVersionsRef.current.clear();
+    salarySaveVersionRef.current = 0;
     dirtyRef.current = false;
     saveAfterCurrentRef.current = false;
     lastSavedSignatureRef.current = createSaveSignature({
@@ -1374,12 +1550,15 @@ export function MonthlyBudgetTable({
     setDirectDebitExclusions(nextDirectDebitExclusions);
     setCreditCardOverrideValues(nextCreditCardOverrideValues);
     setCreditCardOverrideEnabled(nextCreditCardOverrideEnabled);
+    setSalaryReflected(nextSalaryReflected);
     setSaveStatus("idle");
     setSaveError(null);
     setDirectDebitSaveStatus("idle");
     setDirectDebitSaveError(null);
     setCreditCardSaveStatus("idle");
     setCreditCardSaveError(null);
+    setSalarySaveStatus("idle");
+    setSalarySaveError(null);
   }, [overview]);
 
   useEffect(() => {
@@ -1641,6 +1820,15 @@ export function MonthlyBudgetTable({
           </table>
         </div>
         </section>
+
+        <MonthlySalaryControl
+          forecast={displayOverview.salaryForecast}
+          editable={editable}
+          reflectedInCurrentBalance={salaryReflected}
+          saveStatus={salarySaveStatus}
+          saveError={salarySaveError}
+          onToggleReflected={handleSalaryReflectedToggle}
+        />
 
         <MonthlyCreditCardPaymentCards
           payments={displayOverview.creditCardPayments}

@@ -203,9 +203,32 @@ O bloco Day to day e Pagamentos de cartões, implementado em 25/06/2026, **não 
 - `credit_card_statement_overrides`;
 - `accounts.linked_payment_account_id`.
 
+Foi também criada a migration incremental:
+
+```text
+20260701007000_salary_versions_allow_subsidies.sql
+```
+
+Esta migration expande `salary_versions` para suportar a configuração versionada de salário:
+
+- `vacation_bonus_cents`;
+- `vacation_bonus_month`;
+- `christmas_bonus_cents`;
+- `christmas_bonus_month`;
+- constraints para valores não negativos;
+- constraints para meses válidos;
+- constraint para impedir subsídio de férias e subsídio de Natal no mesmo mês.
+
+Foram reutilizadas as estruturas existentes:
+
+- `salary_versions` para configuração versionada;
+- `salary_month_overrides` para o estado mensal de salário reflectido.
+
+Nota posterior: `salary_month_overrides.amount_cents` e `salary_month_overrides.account_id` continuam no schema por compatibilidade e para evitar migrations destrutivas, mas deixaram de ser usados pelos cálculos e pela interface de Salário.
+
 Novas migrations devem:
 
-- ter timestamp posterior a `20260701002000`;
+- ter timestamp posterior à última migration versionada;
 - ser versionadas no repositório;
 - ser verificadas primeiro com `--dry-run`;
 - não apagar dados;
@@ -436,6 +459,39 @@ Nota de ajuste de interface de Pagamentos de cartões em 25/06/2026:
 - `git diff --check` passou, apenas com avisos CRLF já esperados;
 - a repetição dos testes Vitest ficou bloqueada no ambiente Codex: no sandbox falhou com `Access denied` ao resolver `vitest.config.ts`, e a tentativa com permissão elevada foi recusada por limite automático de uso.
 
+Nota da implementação Salário em 26/06/2026:
+
+- a tab Configurações passou a permitir gravar versões de salário com conta de recebimento, salário mensal normal, subsídio de férias, mês do subsídio de férias, subsídio de Natal, mês do subsídio de Natal e mês de entrada em vigor;
+- a configuração é persistida em `salary_versions`;
+- foi criada a migration `20260701007000_salary_versions_allow_subsidies.sql` porque `salary_versions` só tinha `amount_cents` e `account_id`, sem colunas para subsídios;
+- para cada mês é usada a versão mais recente com `effective_from_month <= mês seleccionado`;
+- o subsídio de férias ou de Natal substitui o salário normal no respectivo mês, não é somado;
+- a linha `Salário` no Orçamento é automática, positiva, apenas de leitura e aplicada apenas à conta configurada;
+- valores antigos de `budget_items`/`budget_allocations` com `source_type = 'salary'` são ignorados pelos cálculos actuais;
+- a caixa `Salário do mês` foi acrescentada por baixo da tabela mensal;
+- a checkbox `Já reflectido no saldo actual` grava estado mensal em `salary_month_overrides.status = 'received'` e faz a linha `Salário` passar a zero só nesse mês;
+- desmarcar volta a `status = 'planned'` e repõe imediatamente o cálculo automático;
+- o autosave do salário é independente do autosave geral da tabela e recalcula localmente antes da resposta do servidor.
+
+Validações técnicas deste bloco:
+
+- `npm.cmd run typecheck` passou;
+- `npm.cmd test` falhou no sandbox com `Access is denied` ao resolver `vitest.config.ts`, mas passou com permissão elevada: 15 ficheiros e 120 testes;
+- `npm.cmd run lint` passou;
+- `npm.cmd run build` passou;
+- `git diff --check` passou, apenas com avisos CRLF já esperados;
+- `npx.cmd supabase db push --dry-run` passou e indicou que seria enviada apenas `20260701007000_salary_versions_allow_subsidies.sql`;
+- não foi criado commit.
+
+Nota de correcção final do bloco Salário em 26/06/2026:
+
+- a interface mensal deixou de mostrar `Valor excepcional` e `Usar valor excepcional`;
+- a aplicação deixou de usar `salary_month_overrides.amount_cents` e `salary_month_overrides.account_id` nos cálculos de Salário;
+- `salary_month_overrides` fica apenas como estado mensal da checkbox `Já reflectido no saldo actual`;
+- a caixa `Salário do mês` foi compactada para mostrar apenas título, valor previsto e checkbox;
+- o aviso amarelo do primeiro mês foi removido da página de Orçamento;
+- a regra interna de Julho de 2026 como primeiro mês mantém-se inalterada.
+
 ### 10.2 Problemas ainda existentes
 
 A Fase 2 não está concluída.
@@ -444,6 +500,8 @@ Problemas confirmados:
 
 - validar manualmente no browser, contra Supabase real, a configuração e persistência de Day to day;
 - validar manualmente no browser, contra Supabase real, overrides de pagamentos de cartões, incluindo zero e limpeza para automático;
+- aplicar a migration `20260701007000_salary_versions_allow_subsidies.sql` no Supabase antes de validar Salário em ambiente real;
+- validar manualmente no browser a configuração versionada de Salário, subsídios e checkbox `Já reflectido no saldo actual`;
 - confirmar em browser que mudanças de mês preservam autosaves pendentes e usam o mês correcto;
 - continuar a validar totais horizontais e cartões superiores contra cenários reais com várias contas/cartões;
 - a tab Investimentos ainda não está implementada funcionalmente.
@@ -660,7 +718,46 @@ Regras:
 
 ### 11.7 Salário
 
-O salário é editável por conta.
+“Salário” é calculado automaticamente a partir de `salary_versions` e controlado mensalmente por `salary_month_overrides`.
+
+Configuração:
+
+- conta de recebimento;
+- salário mensal normal;
+- valor do subsídio de férias;
+- mês do subsídio de férias;
+- valor do subsídio de Natal;
+- mês do subsídio de Natal;
+- mês de entrada em vigor.
+
+Regras:
+
+- a configuração é versionada;
+- em mês normal, usa o salário mensal normal;
+- no mês do subsídio de férias, usa apenas o valor configurado para esse subsídio;
+- no mês do subsídio de Natal, usa apenas o valor configurado para esse subsídio;
+- o subsídio substitui o salário normal nesse mês, não é somado;
+- os dois subsídios não podem estar configurados para o mesmo mês;
+- o valor é positivo;
+- o valor aparece apenas na conta de recebimento;
+- a linha `Salário` é apenas de leitura na tabela mensal;
+- valores zero aparecem como `–`.
+
+Controlo mensal:
+
+- a caixa `Salário do mês` fica por baixo da tabela mensal;
+- mostra o valor previsto do mês;
+- permite marcar `Já reflectido no saldo actual`;
+- checkbox desmarcada inclui o salário na previsão;
+- checkbox marcada faz a linha `Salário` passar a zero nesse mês;
+- o estado é independente por mês e persiste em `salary_month_overrides.status`;
+- ausência de registo mensal equivale a salário previsto.
+
+Campos antigos:
+
+- `salary_month_overrides.amount_cents` e `salary_month_overrides.account_id` podem existir no schema;
+- estes campos não participam nos cálculos actuais de Salário;
+- a interface mensal não permite definir valor excepcional de salário.
 
 ### 11.8 Linhas personalizadas
 
@@ -993,16 +1090,17 @@ Testes mínimos da Fase 2:
 - conta correcta para Day to day; **coberto por testes de domínio e componente**
 - despesa personalizada; **coberto**
 - reembolso; **coberto**
+- salário normal, subsídios e checkbox mensal; **coberto por testes de domínio, snapshots mensais e componente**
 - linhas personalizadas sem selector de tipo; **coberto por testes de componente**
 - autosave da tabela mensal; **coberto por testes de componente**
 - subtotal antes do salário; **coberto com previsões personalizadas, Day to day, Débitos directos e Pagamentos de cartões**
-- saldo final; **coberto com previsões personalizadas, Day to day e Pagamentos de cartões**
+- saldo final; **coberto com previsões personalizadas, Day to day, Pagamentos de cartões e Salário**
 - totais horizontais; **coberto estruturalmente nas linhas automáticas e totais da tabela**
 - cartões coerentes; **coberto por testes de domínio, integração mensal e componente**
 - valores zero; **coberto**
 - persistência; **coberta estruturalmente via `budget_items`/`budget_allocations`; validar com Supabase real após migration**
 - recálculo após refresh;
-- linhas calculadas não editáveis; **coberto para Movimentos realizados, Débitos directos, Day to day e Pagamentos de cartões**
+- linhas calculadas não editáveis; **coberto para Movimentos realizados, Débitos directos, Day to day, Pagamentos de cartões e Salário**
 - tabela compacta.
 
 ## 19. Comandos úteis
@@ -1053,15 +1151,12 @@ Antes de alterar qualquer ficheiro, lê integralmente PROJECT_CONTEXT.md e inspe
 
 O próximo trabalho deve continuar exclusivamente na Fase 2:
 
-1. aplicar no Supabase quaisquer migrations incrementais ainda pendentes, se o ambiente real ainda não as tiver aplicado;
-2. validar Orçamento, Configurações, Débitos directos e Histórico contra o Supabase remoto/local real;
-3. gravar uma configuração Day to day e confirmar a linha automática em mês passado, mês actual e mês futuro;
-4. confirmar que a mudança de mês usa a versão Day to day correcta;
-5. validar Pagamentos de cartões com cartão ligado a conta de pagamento;
-6. validar override positivo, override zero e limpeza para automático;
-7. validar que cartão sem conta de pagamento mostra aviso e não altera saldos;
-8. validar refresh e mudança de mês depois de autosaves pendentes;
-9. criar commit Git se a validação manual for aprovada;
-10. só depois decidir o próximo bloco funcional da Fase 2.
-
-Não implementar Investimentos antes desta validação e commit.
+1. aplicar no Supabase a migration `20260701007000_salary_versions_allow_subsidies.sql` com `npx.cmd supabase db push --dry-run` e depois `npx.cmd supabase db push`, se ainda não estiver aplicada;
+2. validar no browser a tab Configurações para Salário, incluindo conta, valores, meses dos subsídios e validação de meses iguais;
+3. validar no Orçamento que a linha `Salário` é automática, positiva, apenas de leitura e aparece só na conta configurada;
+4. validar mês normal, mês do subsídio de férias e mês do subsídio de Natal;
+5. validar a checkbox `Já reflectido no saldo actual`, refresh e independência entre meses;
+6. confirmar que não existem controlos de valor excepcional mensal no Salário;
+7. confirmar impacto no saldo final e mudança de mês depois de autosaves pendentes;
+8. criar commit Git se a validação manual for aprovada;
+9. só depois decidir o próximo bloco funcional da Fase 2, sem avançar para Investimentos antes da validação/commit.

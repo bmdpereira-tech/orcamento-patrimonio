@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
 import { MonthlyBudgetTable } from "@/components/monthly-budget-table";
 import { SummaryCard } from "@/components/summary-card";
 import { UI_TEXT } from "@/content/ui-text";
@@ -12,6 +12,7 @@ import {
   saveMonthlyBudgetAction,
   setCreditCardStatementOverrideAction,
   setDirectDebitForecastExclusionAction,
+  setSalaryMonthOverrideAction,
 } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -142,13 +143,6 @@ export default async function BudgetPage({ searchParams }: BudgetPageProps) {
             />
           </div>
 
-          <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-            <div className="flex gap-2">
-              <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" aria-hidden="true" />
-              <p>{UI_TEXT.budget.firstMonthNotice}</p>
-            </div>
-          </div>
-
           <MonthlyBudgetTable
             overview={overviewResult.overview}
             editable
@@ -157,6 +151,7 @@ export default async function BudgetPage({ searchParams }: BudgetPageProps) {
             deleteCustomItemAction={deleteCustomBudgetItemAction}
             setDirectDebitExcludedAction={setDirectDebitForecastExclusionAction}
             setCreditCardStatementOverrideAction={setCreditCardStatementOverrideAction}
+            setSalaryMonthOverrideAction={setSalaryMonthOverrideAction}
           />
         </>
       ) : null}

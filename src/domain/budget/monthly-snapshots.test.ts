@@ -138,6 +138,25 @@ describe("monthly snapshots", () => {
     expect(snapshot?.finalBalanceCents).toBe(50_00);
   });
 
+  it("includes automatic salary source amounts in the final balance", () => {
+    const [snapshot] = buildSnapshotsForMonth({
+      month: "2026-07",
+      accounts,
+      states: [
+        {
+          accountId: "account-a",
+          month: "2026-07",
+          initialBalanceOverrideCents: 100_00,
+          currentBalanceOverrideCents: 100_00,
+        },
+      ],
+      sourceAmounts: new Map([[monthlySourceAmountKey("2026-07", "salary", "account-a"), 3_000_00]]),
+    });
+
+    expect(snapshot?.salaryCents).toBe(3_000_00);
+    expect(snapshot?.finalBalanceCents).toBe(3_100_00);
+  });
+
   it("calculates credit card payments from current card debt as a zero-sum transfer", () => {
     const snapshots = buildSnapshotsForMonth({
       month: "2026-07",

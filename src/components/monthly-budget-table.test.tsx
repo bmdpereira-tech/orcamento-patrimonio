@@ -10,6 +10,7 @@ import {
   type MonthlyCustomBudgetItem,
 } from "../domain/budget/monthly-view";
 import type { MonthlyDirectDebitOccurrence } from "../domain/budget/recurring-rules";
+import type { MonthlySalaryForecast } from "../domain/budget/salary";
 import { MonthlyBudgetTable } from "./monthly-budget-table";
 
 const accountA: LiquidityAccount = {
@@ -82,6 +83,37 @@ const directDebitOccurrences: MonthlyDirectDebitOccurrence[] = [
   },
 ];
 
+function createSalaryForecast({
+  month = "2026-07",
+  amountCents = 3_000_00,
+  reflectedInCurrentBalance = false,
+}: {
+  month?: MonthId;
+  amountCents?: Cents;
+  reflectedInCurrentBalance?: boolean;
+} = {}): MonthlySalaryForecast {
+  return {
+    month,
+    version: {
+      id: "salary-version",
+      effectiveFromMonth: "2026-07",
+      amountCents,
+      accountId: "account-a",
+      vacationBonusCents: 4_500_00,
+      vacationBonusMonth: 7,
+      christmasBonusCents: 4_250_00,
+      christmasBonusMonth: 12,
+    },
+    accountId: "account-a",
+    accountName: "Conta A",
+    baseAmountCents: amountCents,
+    amountBeforeStatusCents: amountCents,
+    amountCents: reflectedInCurrentBalance ? 0 : amountCents,
+    reflectedInCurrentBalance,
+    status: reflectedInCurrentBalance ? "received" : "planned",
+  };
+}
+
 function expectCheckboxChecked(element: HTMLElement, checked: boolean) {
   expect((element as HTMLInputElement).checked).toBe(checked);
 }
@@ -91,6 +123,8 @@ function createOverview({
   currentBalanceByAccountId = {},
   directDebitsCents = 0,
   dayToDayCents = 0,
+  salaryCents = 0,
+  salaryForecast = null,
   creditCardPayments = [],
   customItems = [],
   overviewAccounts = accounts,
@@ -101,6 +135,8 @@ function createOverview({
   currentBalanceByAccountId?: Partial<Record<string, Cents>>;
   directDebitsCents?: Cents;
   dayToDayCents?: Cents;
+  salaryCents?: Cents;
+  salaryForecast?: MonthlySalaryForecast | null;
   creditCardPayments?: MonthlyCreditCardPayment[];
   customItems?: MonthlyCustomBudgetItem[];
   overviewAccounts?: LiquidityAccount[];
@@ -118,22 +154,25 @@ function createOverview({
           const accountCurrentBalanceCents = currentBalanceByAccountId[account.id] ?? currentBalanceCents;
           const accountDirectDebitsCents = account.id === "account-a" ? directDebitsCents : 0;
           const accountDayToDayCents = account.id === "account-a" ? dayToDayCents : 0;
+          const accountSalaryCents = account.id === "account-a" ? salaryCents : 0;
 
           return {
             realisedMovementsCents: accountCurrentBalanceCents - 100_00,
             currentBalanceCents: accountCurrentBalanceCents,
             directDebitsCents: accountDirectDebitsCents,
             dayToDayCents: accountDayToDayCents,
+            salaryCents: accountSalaryCents,
             subtotalBeforeSalaryCents:
               accountCurrentBalanceCents + accountDirectDebitsCents + accountDayToDayCents,
             finalBalanceCents:
-              accountCurrentBalanceCents + accountDirectDebitsCents + accountDayToDayCents,
+              accountCurrentBalanceCents + accountDirectDebitsCents + accountDayToDayCents + accountSalaryCents,
           };
         })(),
     })),
     customItems,
     directDebitOccurrences: occurrences,
     creditCardPayments,
+    salaryForecast,
   });
 }
 
@@ -188,6 +227,76 @@ describe("MonthlyBudgetTable", () => {
     expect(screen.queryByRole("heading", { name: "Pagamentos de cartões do mês" })).toBeNull();
     expectCheckboxChecked(screen.getByLabelText("Usar valor do extracto — CC Santander"), false);
     expect((screen.getByLabelText("Valor do extracto — CC Santander") as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("renders salary as a read-only automatic income applied to the configured account", () => {
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          currentBalanceCents: 100_00,
+          salaryCents: 3_000_00,
+          salaryForecast: createSalaryForecast({ amountCents: 3_000_00 }),
+        })}
+        editable
+      />,
+    );
+
+    expect(screen.queryByLabelText("Salário — Conta A")).toBeNull();
+    expect(within(screen.getByRole("row", { name: /Salário/ })).getAllByText("3 000,00 €").length).toBeGreaterThan(0);
+    expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("3 100,00 €").length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "Salário do mês" })).toBeTruthy();
+    expect(screen.queryByLabelText("Valor excepcional do salário")).toBeNull();
+    expect(screen.queryByLabelText("Usar valor excepcional do salário")).toBeNull();
+    expect(screen.getByTestId("monthly-salary-control").className).toContain("max-w-2xl");
+  });
+
+  it("marks salary as already reflected only for the selected month", async () => {
+    const setSalaryMonthOverrideAction = vi.fn(async (formData: FormData) => ({
+      ok: true as const,
+      override: {
+        month: String(formData.get("month")),
+        reflectedInCurrentBalance: String(formData.get("reflectedInCurrentBalance")) === "true",
+      },
+    }));
+    const { rerender } = render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          currentBalanceCents: 100_00,
+          salaryCents: 3_000_00,
+          salaryForecast: createSalaryForecast({ amountCents: 3_000_00 }),
+        })}
+        editable
+        setSalaryMonthOverrideAction={setSalaryMonthOverrideAction}
+      />,
+    );
+
+    const checkbox = screen.getByLabelText("Já reflectido no saldo actual");
+    fireEvent.click(checkbox);
+
+    expectCheckboxChecked(checkbox, true);
+    expect(within(screen.getByRole("row", { name: /Salário/ })).getAllByText("–").length).toBeGreaterThan(0);
+    expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("100,00 €").length).toBeGreaterThan(0);
+    await waitFor(() => expect(setSalaryMonthOverrideAction).toHaveBeenCalledTimes(1));
+    expect((setSalaryMonthOverrideAction.mock.calls[0]?.[0] as FormData).get("reflectedInCurrentBalance")).toBe(
+      "true",
+    );
+    expect((setSalaryMonthOverrideAction.mock.calls[0]?.[0] as FormData).has("amount")).toBe(false);
+
+    rerender(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          month: "2026-08",
+          currentBalanceCents: 100_00,
+          salaryCents: 3_000_00,
+          salaryForecast: createSalaryForecast({ month: "2026-08", amountCents: 3_000_00 }),
+        })}
+        editable
+        setSalaryMonthOverrideAction={setSalaryMonthOverrideAction}
+      />,
+    );
+
+    expectCheckboxChecked(screen.getByLabelText("Já reflectido no saldo actual"), false);
+    expect(within(screen.getByRole("row", { name: /Salário/ })).getAllByText("3 000,00 €").length).toBeGreaterThan(0);
   });
 
   it("enables, updates and autosaves a credit card statement override in a future month", async () => {

@@ -19,6 +19,7 @@ import {
   setCreditCardStatementOverride,
 } from "@/server/budget/credit-card-payments";
 import { setRecurringRuleMonthExcluded } from "@/server/budget/recurring-rules";
+import { saveSalaryMonthState } from "@/server/budget/salary";
 
 type BudgetActionResult = { ok: true } | { ok: false; error: string };
 type AddCustomBudgetItemActionResult = { ok: true; item: MonthlyCustomBudgetItem } | { ok: false; error: string };
@@ -39,6 +40,15 @@ type CreditCardStatementOverrideActionResult =
         creditCardAccountId: string;
         month: string;
         statementAmountCents: number | null;
+      };
+    }
+  | { ok: false; error: string };
+type SalaryMonthOverrideActionResult =
+  | {
+      ok: true;
+      override: {
+        month: string;
+        reflectedInCurrentBalance: boolean;
       };
     }
   | { ok: false; error: string };
@@ -200,6 +210,32 @@ export async function setCreditCardStatementOverrideAction(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Não foi possível guardar o valor do extracto.";
+    return { ok: false, error: message };
+  }
+}
+
+export async function setSalaryMonthOverrideAction(
+  formData: FormData,
+): Promise<SalaryMonthOverrideActionResult> {
+  const month = normaliseMonth(String(formData.get("month") ?? ""));
+  const reflectedInCurrentBalance = String(formData.get("reflectedInCurrentBalance") ?? "false") === "true";
+
+  try {
+    const result = await saveSalaryMonthState({
+      month,
+      reflectedInCurrentBalance,
+    });
+
+    revalidatePath("/orcamento");
+    return {
+      ok: true,
+      override: {
+        month,
+        reflectedInCurrentBalance: result.reflectedInCurrentBalance,
+      },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Não foi possível guardar o salário do mês.";
     return { ok: false, error: message };
   }
 }

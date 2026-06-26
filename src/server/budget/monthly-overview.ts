@@ -22,6 +22,10 @@ import {
   monthRangeUntil,
 } from "@/domain/budget/recurring-rules";
 import {
+  buildSalarySourceAmountMap,
+  calculateMonthlySalaryForecast,
+} from "@/domain/budget/salary";
+import {
   buildSnapshotsForMonth,
   monthlySourceAmountKey,
   type AccountMonthState,
@@ -40,6 +44,7 @@ import { listManagedAccounts } from "./accounts";
 import { listCreditCardStatementOverridesUntil } from "./credit-card-payments";
 import { listDailyBudgetVersionsUntil } from "./daily-budget";
 import { listRecurringRuleMonthStatesUntil, listRecurringRules } from "./recurring-rules";
+import { listSalaryMonthOverridesUntil, listSalaryVersionsUntil } from "./salary";
 
 type AccountMonthStateRow = {
   account_id: string;
@@ -250,7 +255,8 @@ function buildSourceAmountMap(items: readonly BudgetItemRow[], allocations: read
       !isMonthlySystemSourceType(item.source_type) ||
       item.source_type === "direct_debits" ||
       item.source_type === "day_to_day" ||
-      item.source_type === "credit_card_payments"
+      item.source_type === "credit_card_payments" ||
+      item.source_type === "salary"
     ) {
       continue;
     }
@@ -306,6 +312,8 @@ export async function getSupabaseBudgetOverview(
     recurringRuleMonthStates,
     dailyBudgetVersions,
     creditCardStatementOverrides,
+    salaryVersions,
+    salaryMonthOverrides,
   ] = await Promise.all([
     listManagedAccounts(client),
     fetchAccountMonthStates(client, month),
@@ -315,6 +323,8 @@ export async function getSupabaseBudgetOverview(
     listRecurringRuleMonthStatesUntil(month, client),
     listDailyBudgetVersionsUntil(month, client),
     listCreditCardStatementOverridesUntil(month, client),
+    listSalaryVersionsUntil(month, client),
+    listSalaryMonthOverridesUntil(month, client),
   ]);
   const activeAccounts = getBudgetVisibleLiquidityAccounts(accounts, month);
   const sourceAmounts = buildSourceAmountMap(budgetData.items, budgetData.allocations);
@@ -329,12 +339,21 @@ export async function getSupabaseBudgetOverview(
     months,
     referenceDate,
   });
+  const salaryAmounts = buildSalarySourceAmountMap({
+    versions: salaryVersions,
+    overrides: salaryMonthOverrides,
+    months,
+  });
 
   for (const [key, amountCents] of recurringDebitAmounts) {
     sourceAmounts.set(key, amountCents);
   }
 
   for (const [key, amountCents] of dailyBudgetAmounts) {
+    sourceAmounts.set(key, amountCents);
+  }
+
+  for (const [key, amountCents] of salaryAmounts) {
     sourceAmounts.set(key, amountCents);
   }
 
@@ -373,6 +392,12 @@ export async function getSupabaseBudgetOverview(
     month,
     overrides: creditCardStatementOverrides,
   });
+  const salaryForecast = calculateMonthlySalaryForecast({
+    versions: salaryVersions,
+    overrides: salaryMonthOverrides,
+    accounts,
+    month,
+  });
   const selectedCustomItems = customItems.filter((item) => item.month === month);
 
   return buildBudgetOverview({
@@ -384,6 +409,7 @@ export async function getSupabaseBudgetOverview(
     directDebitOccurrences,
     dailyBudgetForecast,
     creditCardPayments,
+    salaryForecast,
   });
 }
 
