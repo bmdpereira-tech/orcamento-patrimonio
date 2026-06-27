@@ -491,6 +491,37 @@ function MoneyCell({
   return <>{formatEuroCents(value)}</>;
 }
 
+function TableMoneyInput({
+  value,
+  ariaLabel,
+  onChange,
+  onBlur,
+}: {
+  value: string;
+  ariaLabel: string;
+  onChange: (value: string) => void;
+  onBlur: () => void;
+}) {
+  const [isFocused, setIsFocused] = useState(false);
+  const parsedValue = tryParseCurrencyInput(value);
+  const displayValue = !isFocused && parsedValue !== null ? formatEuroCents(parsedValue) : value;
+
+  return (
+    <input
+      value={displayValue}
+      onChange={(event) => onChange(event.target.value)}
+      onFocus={() => setIsFocused(true)}
+      onBlur={() => {
+        setIsFocused(false);
+        onBlur();
+      }}
+      inputMode="decimal"
+      aria-label={ariaLabel}
+      className="h-6 w-full min-w-0 rounded border border-transparent bg-transparent px-0 text-right tabular-nums text-current shadow-none outline-none transition [font:inherit] placeholder:text-current focus:border-brand-500 focus:bg-white focus:px-1 focus:text-slate-900 focus:shadow-inner focus:ring-1 focus:ring-brand-500"
+    />
+  );
+}
+
 function EditableMoneyCell({
   row,
   accountId,
@@ -514,18 +545,12 @@ function EditableMoneyCell({
     return <>{formatEuroCents(displayValue)}</>;
   }
 
-  const parsedValue = tryParseCurrencyInput(value);
-  const shouldDisplayZeroAsDash = row.rowKey === "realised-movements" && parsedValue === 0;
-
   return (
-    <input
-      value={shouldDisplayZeroAsDash ? "" : value}
-      onChange={(event) => onChange(event.target.value)}
+    <TableMoneyInput
+      value={value}
+      ariaLabel={`${row.label} — ${accountName}`}
+      onChange={onChange}
       onBlur={onBlur}
-      inputMode="decimal"
-      aria-label={`${row.label} — ${accountName}`}
-      placeholder={row.rowKey === "realised-movements" ? "–" : undefined}
-      className="h-6 w-full min-w-0 rounded border border-transparent bg-white/80 px-1 text-right tabular-nums text-slate-900 shadow-inner outline-none transition focus:border-brand-500 focus:bg-white focus:ring-1 focus:ring-brand-500"
     />
   );
 }
@@ -583,13 +608,11 @@ function CustomItemMoneyCell({
   const label = item.description.trim() || "Linha personalizada";
 
   return (
-    <input
+    <TableMoneyInput
       value={value}
-      onChange={(event) => onChange(event.target.value)}
+      ariaLabel={`${label} — ${accountName}`}
+      onChange={onChange}
       onBlur={onBlur}
-      inputMode="decimal"
-      aria-label={`${label} — ${accountName}`}
-      className="h-6 w-full min-w-0 rounded border border-transparent bg-white/80 px-1 text-right tabular-nums text-slate-900 shadow-inner outline-none transition focus:border-brand-500 focus:bg-white focus:ring-1 focus:ring-brand-500"
     />
   );
 }

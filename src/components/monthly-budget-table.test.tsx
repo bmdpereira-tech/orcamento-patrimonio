@@ -210,8 +210,13 @@ describe("MonthlyBudgetTable", () => {
     );
 
     const input = screen.getByLabelText("Movimentos realizados — Conta A");
-    expect((input as HTMLInputElement).value).toBe("");
-    expect((input as HTMLInputElement).placeholder).toBe("–");
+    expect((input as HTMLInputElement).value).toBe("–");
+    expect(input.className).toContain("bg-transparent");
+
+    fireEvent.focus(input);
+    expect((input as HTMLInputElement).value).toBe("0,00");
+    fireEvent.blur(input);
+    expect((input as HTMLInputElement).value).toBe("–");
 
     fireEvent.change(input, { target: { value: "25,00" } });
 
@@ -222,6 +227,95 @@ describe("MonthlyBudgetTable", () => {
 
     expect(within(screen.getByRole("row", { name: /Saldo actual/ })).getAllByText("70,00 €").length).toBeGreaterThan(0);
     expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("60,00 €").length).toBeGreaterThan(0);
+  });
+
+  it("renders editable realised movements with read-only currency formatting until focused", () => {
+    const { rerender } = render(
+      <MonthlyBudgetTable
+        overview={createOverview({ currentBalanceCents: 3_900_00 })}
+        editable
+      />,
+    );
+
+    let input = screen.getByLabelText("Movimentos realizados — Conta A") as HTMLInputElement;
+
+    expect(input.value).toBe("3 800,00 €");
+
+    fireEvent.focus(input);
+    expect(input.value).toBe("3800,00");
+    fireEvent.blur(input);
+
+    rerender(
+      <MonthlyBudgetTable
+        overview={createOverview({ currentBalanceCents: -3_700_00 })}
+        editable
+      />,
+    );
+    input = screen.getByLabelText("Movimentos realizados — Conta A") as HTMLInputElement;
+
+    expect(input.value).toBe("(3 800,00 €)");
+
+    fireEvent.focus(input);
+    expect(input.value).toBe("-3800,00");
+  });
+
+  it("renders editable custom values with read-only currency formatting until focused", () => {
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          currentBalanceCents: 100_00,
+          customItems: [
+            {
+              id: "custom-a",
+              month: "2026-07",
+              description: "Ajuste",
+              sortOrder: 10,
+              valuesByAccountId: { "account-a": 178_11 },
+            },
+          ],
+        })}
+        editable
+      />,
+    );
+
+    const input = screen.getByLabelText("Ajuste — Conta A") as HTMLInputElement;
+
+    expect(input.value).toBe("178,11 €");
+
+    fireEvent.focus(input);
+    expect(input.value).toBe("178,11");
+
+    fireEvent.change(input, { target: { value: "25,00" } });
+
+    expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("125,00 €").length).toBeGreaterThan(0);
+  });
+
+  it("renders editable custom zero values as a dash until focused", () => {
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          currentBalanceCents: 100_00,
+          customItems: [
+            {
+              id: "custom-a",
+              month: "2026-07",
+              description: "Ajuste",
+              sortOrder: 10,
+              valuesByAccountId: { "account-a": 0 },
+            },
+          ],
+        })}
+        editable
+      />,
+    );
+
+    const input = screen.getByLabelText("Ajuste — Conta A") as HTMLInputElement;
+
+    expect(input.value).toBe("–");
+    expect(within(screen.getByRole("row", { name: /Ajuste/ })).getAllByText("–").length).toBeGreaterThan(0);
+
+    fireEvent.focus(input);
+    expect(input.value).toBe("0,00");
   });
 
   it("keeps a future month without realised movements at the initial balance while forecasting the final balance", () => {
@@ -238,8 +332,7 @@ describe("MonthlyBudgetTable", () => {
 
     const input = screen.getByLabelText("Movimentos realizados — Conta A") as HTMLInputElement;
 
-    expect(input.value).toBe("");
-    expect(input.placeholder).toBe("–");
+    expect(input.value).toBe("–");
     expect(within(screen.getByRole("row", { name: /Saldo actual/ })).getAllByText("100,00 €").length).toBeGreaterThan(0);
     expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("80,00 €").length).toBeGreaterThan(0);
   });
@@ -851,6 +944,8 @@ describe("MonthlyBudgetTable", () => {
     render(<MonthlyBudgetTable overview={createOverview()} editable saveBudgetAction={saveBudgetAction} />);
 
     const input = screen.getByLabelText("Movimentos realizados — Conta A");
+    fireEvent.focus(input);
+    expect((input as HTMLInputElement).value).toBe("-25,00");
     fireEvent.change(input, { target: { value: "80,00" } });
     fireEvent.blur(input);
 
@@ -932,7 +1027,7 @@ describe("MonthlyBudgetTable", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancelar" }));
 
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect((screen.getByLabelText("Movimentos realizados — Conta A") as HTMLInputElement).value).toBe("-25,00");
+    expect((screen.getByLabelText("Movimentos realizados — Conta A") as HTMLInputElement).value).toBe("(25,00 €)");
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);

@@ -69,6 +69,7 @@ export default async function BudgetPage({ searchParams }: BudgetPageProps) {
               {UI_TEXT.budget.month}
             </label>
             <input
+              key={month}
               id="month"
               name="month"
               type="month"

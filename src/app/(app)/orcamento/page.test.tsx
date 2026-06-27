@@ -3,8 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import BudgetPage from "./page";
 
 vi.mock("@/server/budget/monthly-overview", () => ({
-  getSupabaseBudgetOverview: vi.fn(async (month: "2026-07" | "2026-09") => {
+  getSupabaseBudgetOverview: vi.fn(async (month: string) => {
     const { buildBudgetOverview, createEmptySnapshot } = await import("@/domain/budget/monthly-view");
+    const { normaliseMonth } = await import("@/domain/budget/months");
     const account = {
       id: "account-a",
       name: "Conta A",
@@ -15,9 +16,10 @@ vi.mock("@/server/budget/monthly-overview", () => ({
       includeInNetWorth: true,
       sortOrder: 10,
     };
+    const monthId = normaliseMonth(month);
 
     return buildBudgetOverview({
-      month,
+      month: monthId,
       accounts: [account],
       investmentAssets: [
         {
@@ -25,7 +27,7 @@ vi.mock("@/server/budget/monthly-overview", () => ({
           name: "Core Equity",
           startMonth: "2025-01",
           sortOrder: 10,
-          monthlyValuesCents: { [month]: 10_000_00 },
+          monthlyValuesCents: { [monthId]: 10_000_00 },
         },
       ],
       snapshots: [
@@ -78,9 +80,51 @@ describe("BudgetPage", () => {
     render(page);
 
     expect(screen.getByRole("heading", { name: "Setembro de 2026" })).toBeTruthy();
+    expect((screen.getByLabelText("Mês") as HTMLInputElement).value).toBe("2026-09");
     expect(screen.getByRole("link", { name: "Mês actual" }).getAttribute("href")).toBe(
       "/orcamento?month=2026-09",
     );
+  });
+
+  it("keeps selector, heading and navigation links synchronized with the selected month", async () => {
+    const page = await BudgetPage({
+      searchParams: Promise.resolve({ month: "2026-08" }),
+    });
+
+    render(page);
+
+    expect(screen.getByRole("heading", { name: "Agosto de 2026" })).toBeTruthy();
+    expect((screen.getByLabelText("Mês") as HTMLInputElement).value).toBe("2026-08");
+    expect(screen.getByRole("link", { name: "Mês anterior" }).getAttribute("href")).toBe(
+      "/orcamento?month=2026-07",
+    );
+    expect(screen.getByRole("link", { name: "Mês seguinte" }).getAttribute("href")).toBe(
+      "/orcamento?month=2026-09",
+    );
+  });
+
+  it("keeps the current-month shortcut synchronized with the selector after navigation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-15T10:00:00.000Z"));
+
+    const { rerender } = render(
+      await BudgetPage({
+        searchParams: Promise.resolve({ month: "2026-07" }),
+      }),
+    );
+
+    expect(screen.getByRole("link", { name: "Mês actual" }).getAttribute("href")).toBe(
+      "/orcamento?month=2026-09",
+    );
+
+    rerender(
+      await BudgetPage({
+        searchParams: Promise.resolve({ month: "2026-09" }),
+      }),
+    );
+
+    expect(screen.getByRole("heading", { name: "Setembro de 2026" })).toBeTruthy();
+    expect((screen.getByLabelText("Mês") as HTMLInputElement).value).toBe("2026-09");
   });
 
   it("renders investment valuation cards and net worth from the monthly overview", async () => {

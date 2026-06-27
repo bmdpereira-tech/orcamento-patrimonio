@@ -793,6 +793,26 @@ Validações técnicas desta revisão:
 - `npm.cmd test` passou com permissão elevada: 28 ficheiros e 212 testes;
 - `npm.cmd run build` passou.
 
+Nota dos ajustes UX do Orçamento mensal em 27/06/2026:
+
+- não houve alteração de lógica financeira, cálculos, migrations ou estrutura de dados;
+- as células monetárias editáveis da tabela mensal passaram a usar um input discreto reutilizável;
+- fora de foco, o input fica visualmente alinhado com as células read-only: fundo transparente, sem sombra visível, alinhamento à direita, tipografia herdada e cor herdada da célula;
+- fora de foco, os valores monetários editáveis usam a mesma formatação das células read-only através de `formatEuroCents`: símbolo `€`, separador de milhares, duas casas decimais, negativos entre parênteses e zero como `–`;
+- ao focar, o campo volta a mostrar o valor editável, por exemplo `0,00`, mantendo edição por teclado, autosave, blur e validações existentes;
+- a alteração aplica-se a `Movimentos realizados`, `Saldo inicial` no primeiro mês e valores de linhas personalizadas;
+- o selector de mês da página Orçamento recebeu uma `key` baseada no mês seleccionado para ser remontado em navegação por setas ou `Mês actual`, evitando `defaultValue` visualmente desfasado em transições client-side;
+- foram adicionados testes para positivos, negativos e zero em células editáveis, edição/autosave ao focar, e sincronização entre selector, título e links de navegação.
+
+Validações técnicas destes ajustes:
+
+- `npm.cmd run lint` passou;
+- `npm.cmd run typecheck` passou;
+- teste focado da tabela mensal passou com permissão elevada: 1 ficheiro e 34 testes;
+- `npm.cmd test` passou com permissão elevada: 28 ficheiros e 217 testes;
+- `npm.cmd run build` passou;
+- `git diff --check` passou, apenas com avisos CRLF já esperados.
+
 ### 10.2 Estado pré-publicação
 
 Não há bloqueadores técnicos conhecidos para publicar via GitHub + Vercel + Supabase.
@@ -1154,7 +1174,13 @@ Um resultado válido igual a zero deve aparecer como:
 –
 ```
 
-Usar `–` para zero em visualização normal. O campo editável de `Movimentos realizados` deve representar zero como campo vazio com placeholder `–`, mantendo campo vazio ou zero como movimento igual a zero.
+Usar `–` para zero em visualização normal.
+
+Campos monetários editáveis da tabela mensal:
+
+- fora de foco, devem usar a mesma formatação das células read-only (`3 800,00 €`, `(3 800,00 €)`, `–`);
+- ao focar, podem regressar ao formato simples de edição (`3800,00`, `-3800,00`, `0,00`);
+- campo vazio ou zero continua a ser interpretado como movimento/valor zero.
 
 ## 12. Cartões superiores
 
