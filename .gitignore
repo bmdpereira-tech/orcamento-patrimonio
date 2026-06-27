@@ -28,6 +28,10 @@ coverage/
 
 # local Supabase state
 .supabase/
+supabase/.temp/
+
+# local validation artifacts
+budget-*-check*.png
 
 # OS
 .DS_Store

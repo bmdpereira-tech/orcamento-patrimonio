@@ -4,91 +4,78 @@ Aplicação web pessoal para controlo mensal de orçamento, liquidez, cartões d
 
 ## Estado actual
 
-Fase 2 em desenvolvimento:
+A Fase 2 está implementada e validada manualmente nas áreas principais:
 
-- Next.js App Router, TypeScript, Tailwind CSS e Vitest configurados.
-- Login single-user por palavra-passe com hash bcrypt e cookie `HttpOnly`.
-- Layout protegido com navegação base.
-- Migration Supabase/PostgreSQL com tabelas, constraints, índices, triggers `updated_at` e RLS sem acesso público.
-- Contas carregadas e guardadas no Supabase.
-- CRUD de contas com nome curto, tipo, ordem, visibilidade na tabela e inclusão em património líquido.
-- Tabela mensal carregada do Supabase, com células editáveis e persistência em `account_month_states`, `budget_items` e `budget_allocations`.
-- Net Assets calculado a partir das contas marcadas para património líquido e dos activos de investimento existentes.
-- Seed inicial sem saldos pessoais.
-- Helpers testáveis para meses e montantes em cêntimos.
+- Orçamento mensal com saldos transportados, movimentos realizados, previsões, salário, débitos directos, Day to day, pagamentos de cartões e linhas personalizadas.
+- Contas com criação, edição, arquivo, reactivação e eliminação segura.
+- Débitos directos recorrentes com checklist mensal.
+- Configurações versionadas de Day to day e salário/subsídios.
+- Investimentos com activos, entregas, resgates, valorizações, métricas, rentabilidade simples e XIRR.
+- Integração das valorizações de investimentos no Orçamento e no Património líquido.
+- Histórico mensal com gráfico de liquidez/saldo e gráfico XIRR por investimento/global.
+- Login single-user por palavra-passe com cookie `HttpOnly`.
+- Supabase com RLS activa e acesso ao servidor via service role.
 
 ## Requisitos
 
 - Node.js 20 ou superior.
-- Uma instância Supabase/PostgreSQL.
 - npm.
+- Projecto Supabase.
+- Vercel CLI opcional para publicação por linha de comando.
 
-## Configuração local
+## Variáveis de ambiente
 
-1. Instalar dependências:
+Criar `.env.local` a partir de `.env.example`:
 
-```bash
-npm install
+```env
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=replace-with-service-role-key
+APP_PASSWORD_HASH=\$2a\$12\$replace-with-bcrypt-hash
+APP_SESSION_SECRET=replace-with-at-least-32-random-characters
 ```
 
-2. Criar `.env` a partir de `.env.example`.
-
-3. Gerar o hash da palavra-passe:
+Gerar o hash da palavra-passe:
 
 ```bash
 npm run auth:hash -- "a-sua-palavra-passe"
 ```
 
-4. Gerar o segredo de sessão:
+Gerar o segredo de sessão:
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-5. Configurar as variáveis:
+Notas de segurança:
 
-```env
-NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=...
-APP_PASSWORD_HASH=...
-APP_SESSION_SECRET=...
-```
-
-Nunca exponha `SUPABASE_SERVICE_ROLE_KEY` no browser. A aplicação usa Supabase apenas no servidor.
+- `SUPABASE_SERVICE_ROLE_KEY` nunca deve ser exposta no browser.
+- Apenas `NEXT_PUBLIC_SUPABASE_URL` é pública.
+- `.env`, `.env.local` e variantes locais estão ignorados pelo Git.
+- Em ficheiros `.env` do Next.js, escapar os `$` do bcrypt como `\$`.
 
 ## Base de dados
 
-Aplicar as migrations por ordem:
+As migrations versionadas estão em `supabase/migrations/`.
 
-```text
-supabase/migrations/20260701000000_initial_schema.sql
-supabase/migrations/20260701001000_rename_t212_cash.sql
-supabase/migrations/20260701002000_phase2_accounts_and_budget_lines.sql
+Validar e aplicar no Supabase:
+
+```bash
+npx supabase db push --dry-run
+npx supabase db push
 ```
 
-Depois executar o seed:
+Executar seed inicial, se necessário:
 
 ```bash
 npm run db:seed
 ```
 
-O seed cria/actualiza apenas:
+O seed é idempotente e cria/actualiza apenas contas e configuração inicial, sem saldos pessoais, salário, débitos directos, valorizações pessoais ou movimentos reais.
 
-- Santander;
-- CC Santander;
-- ActivoBank;
-- CC ActivoBank;
-- T212 Cash;
-- N26;
-- IGCP;
-- Trading 212 — Investimentos;
-- primeiro mês disponível: 1 de Julho de 2026.
-
-Não são inseridos saldos pessoais, salário, débitos directos, valorizações pessoais ou movimentos reais.
-
-## Desenvolvimento
+## Desenvolvimento local
 
 ```bash
+npm install
 npm run dev
 ```
 
@@ -100,24 +87,60 @@ Abrir `http://localhost:3000`.
 npm run lint
 npm run typecheck
 npm test
+npm run build
 ```
+
+## Publicação GitHub + Vercel
+
+1. Confirmar estado local:
+
+```bash
+git status
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npx supabase db push --dry-run
+```
+
+2. Enviar para GitHub:
+
+```bash
+git remote add origin https://github.com/USER/REPO.git
+git push -u origin master
+```
+
+3. Importar o repositório no Vercel ou ligar por CLI:
+
+```bash
+npx vercel login
+npx vercel link
+```
+
+4. Configurar no Vercel as variáveis:
+
+```text
+NEXT_PUBLIC_SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY
+APP_PASSWORD_HASH
+APP_SESSION_SECRET
+```
+
+5. Publicar:
+
+```bash
+npx vercel deploy
+npx vercel deploy --prod
+```
+
+Com a integração GitHub do Vercel activa, pushes para branches criam previews e o branch de produção configurado publica automaticamente.
 
 ## Decisões técnicas
 
 - Meses são representados como `YYYY-MM`; no PostgreSQL, como `date` sempre no primeiro dia do mês.
 - Montantes são guardados e calculados em cêntimos inteiros.
-- A interface usa `pt-PT`, EUR e valores negativos entre parênteses.
-- O histórico começa em Julho de 2026; meses anteriores são normalizados para esse limite.
+- A interface usa `pt-PT`, EUR e valores zero como `–`.
+- Julho de 2026 é o primeiro mês disponível do Orçamento.
+- Investimentos podem ter histórico anterior a Julho de 2026 para cálculo de rentabilidade e XIRR.
 - Autenticação não usa email nem Supabase Auth.
 - RLS fica activa com políticas que negam acesso a clientes anónimos; o servidor usa a service role.
-
-## Próximas fases
-
-1. Completar restantes operações funcionais da Fase 2, incluindo débitos recorrentes, regras mensais e histórico.
-2. Criar a tab funcional de Investimentos com fundos, entregas, resgates, valorizações e cálculos.
-3. Integrar automaticamente o valor mensal de Investimentos no orçamento e no cálculo de Net Assets.
-4. Adicionar gráficos, smoke tests end-to-end e validação visual final.
-
-## Publicação futura
-
-A estrutura está preparada para GitHub, Vercel e Supabase, mas esta fase não publica nem faz push. Antes de publicar, configurar variáveis de ambiente no destino, rever as policies e executar a suite completa de verificação.

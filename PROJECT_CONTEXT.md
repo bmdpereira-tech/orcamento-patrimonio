@@ -773,20 +773,36 @@ Validações técnicas desta configuração visual:
 - `npm.cmd run build` passou;
 - `git diff --check` passou, apenas com avisos CRLF já esperados.
 
-### 10.2 Problemas ainda existentes
+Nota da revisão final pré-publicação em 27/06/2026:
 
-A Fase 2 aguarda validação manual desta revisão antes de commit.
+- a validação manual da tab Histórico foi concluída com sucesso e commitada em `f58fe8d81006e81989209a1e996de67cb0d8e8f4`;
+- `README.md` foi actualizado com o estado funcional real, configuração local, migrations, validações e comandos de publicação GitHub/Vercel/Supabase;
+- `.gitignore` passou a ignorar `supabase/.temp/` e artefactos locais de validação `budget-*-check*.png`;
+- foram removidos do Git três screenshots locais de validação que não devem ser publicados;
+- `.env` e `.env.local` não estão versionados e não aparecem no histórico Git;
+- a pesquisa de secrets em ficheiros versionados encontrou apenas placeholders documentais;
+- a service role do Supabase continua centralizada em `src/server/supabase/client.ts`, com `server-only`, e é usada apenas por serviços/server actions/scripts;
+- `npx.cmd supabase db push --dry-run` confirmou que a base de dados remota está actualizada;
+- a verificação remota de resíduos `Teste` em regras, orçamento, contas, investimentos, notas de fluxos/valorizações e estados mensais órfãos devolveu zero ocorrências;
+- não foram criadas migrations novas.
 
-Problemas confirmados:
+Validações técnicas desta revisão:
 
-- aplicar as migrations `20260701009000_investment_cash_flows_and_valuations.sql`, `20260701010000_investment_assets_description.sql` e `20260701011000_investment_dates_before_budget_start.sql` antes de usar a tab Investimentos contra Supabase real, caso ainda não estejam aplicadas;
-- validar manualmente no browser a reformulação da tab Histórico;
-- validar manualmente no browser a protecção de alterações históricas assim que existirem meses anteriores utilizáveis;
-- confirmar em browser que mudanças de mês preservam autosaves pendentes e usam o mês correcto;
-- continuar a validar totais horizontais e cartões superiores contra cenários reais com várias contas/cartões;
-- a validação técnica completa por `npm.cmd test` continua dependente de execução fora do sandbox quando o Vitest/esbuild é bloqueado pela pasta OneDrive.
+- `npm.cmd run lint` passou;
+- `npm.cmd run typecheck` passou;
+- `npm.cmd test` passou com permissão elevada: 28 ficheiros e 212 testes;
+- `npm.cmd run build` passou.
 
-Não avançar para a Fase 3 antes de concluir estes pontos.
+### 10.2 Estado pré-publicação
+
+Não há bloqueadores técnicos conhecidos para publicar via GitHub + Vercel + Supabase.
+
+Pontos operacionais antes de abrir a app em produção:
+
+- configurar no Vercel as variáveis `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `APP_PASSWORD_HASH` e `APP_SESSION_SECRET`;
+- confirmar no Vercel que o branch de produção aponta para o branch Git correcto;
+- executar um smoke test autenticado após o primeiro deploy em `/orcamento`, `/historico`, `/contas`, `/debitos-directos`, `/investimentos` e `/configuracoes`;
+- manter `SUPABASE_SERVICE_ROLE_KEY` restrita ao ambiente servidor/Vercel e nunca prefixá-la com `NEXT_PUBLIC_`.
 
 ## 11. Regras funcionais do Orçamento mensal
 
@@ -1453,10 +1469,12 @@ Antes de alterar qualquer ficheiro, lê integralmente PROJECT_CONTEXT.md e inspe
 
 ## 21. Próximo passo recomendado
 
-O próximo trabalho deve continuar exclusivamente na Fase 2:
+O próximo trabalho recomendado é a publicação:
 
-1. aplicar no Supabase real as migrations pendentes de Investimentos, quando for oportuno;
-2. validar manualmente no browser a tab Histórico reformulada;
-3. criar commit Git se a validação manual for aprovada;
-4. repetir `npm.cmd test` fora do sandbox, se necessário, por causa do bloqueio do Vitest/esbuild na pasta OneDrive;
-5. só depois considerar gráficos ou funcionalidades adicionais.
+1. criar ou actualizar o repositório GitHub;
+2. fazer push do branch actual;
+3. importar o projecto no Vercel;
+4. configurar as variáveis de ambiente no Vercel;
+5. confirmar `npx.cmd supabase db push --dry-run` antes do deploy;
+6. publicar uma preview e fazer smoke test autenticado;
+7. promover/publicar produção quando a preview estiver validada.
