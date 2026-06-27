@@ -1,6 +1,6 @@
 # PROJECT_CONTEXT.md
 
-> **Última actualização:** 26/06/2026
+> **Última actualização:** 27/06/2026
 > **Projecto:** App Orçamento  
 > **Pasta local:** `C:\Users\brunopereira\OneDrive - Ever You\Apps\Orçamento`
 
@@ -703,6 +703,76 @@ Validações técnicas desta integração:
 - `npm.cmd run build` passou;
 - `git diff --check` passou, apenas com avisos CRLF já esperados.
 
+Nota da reformulação da tab Histórico em 26/06/2026:
+
+- a tab Histórico passou a ter apenas duas áreas visuais:
+  - `Liquidez e saldo mensal`;
+  - `Rentabilidade dos investimentos (XIRR)`;
+- foi removida da página a tabela antiga de variações mensais e deixou de haver tabela de valores de investimentos;
+- `src/domain/budget/monthly-history.ts` passou a construir séries mensais puras para liquidez e XIRR;
+- a série de liquidez calcula, por mês, `saldoInicialTotal`, `saldoFinalTotal` e `variacaoMensal = saldoFinalTotal - saldoInicialTotal`;
+- a variação de liquidez/orçamento usa os saldos finais mensais já calculados pelo Orçamento, reflectindo movimentos realizados, previsões e salário;
+- a série de investimentos calcula XIRR por investimento e uma série `Global`, usando todos os fluxos até ao último dia do mês e a última valorização elegível até esse dia;
+- valorizações futuras não entram em meses anteriores;
+- investimentos arquivados continuam nas séries quando têm histórico;
+- meses sem dados suficientes para XIRR produzem ponto vazio (`null`) para permitir gaps no gráfico;
+- os selectores de período suportam `12 meses`, `YTD` e `Ano em curso`;
+- `12 meses` usa os últimos 12 meses disponíveis; `YTD` e `Ano em curso` usam os meses disponíveis do ano civil actual até ao mês actual;
+- a UI usa `recharts`, dependência já existente no projecto, sem adicionar bibliotecas novas;
+- não foram criadas migrations.
+
+Validações técnicas desta reformulação:
+
+- `npm.cmd run lint` passou;
+- `npm.cmd run typecheck` passou;
+- `npm.cmd run build` passou;
+- `git diff --check` passou, apenas com avisos CRLF já esperados;
+- `npm.cmd test` foi tentado, mas o Vitest/esbuild voltou a falhar no sandbox com `Access is denied` ao carregar `vitest.config.ts`;
+- a repetição com permissão elevada não pôde ser executada porque o revisor automático recusou por limite de uso.
+
+Nota da correcção da liquidez histórica em 27/06/2026:
+
+- a área `Rentabilidade dos investimentos (XIRR)` ficou inalterada;
+- a secção `Liquidez e saldo mensal` passou a ter selector próprio de mês de referência;
+- por defeito, o mês de referência usa o mês actual em `Europe/Lisbon`, normalizado para o primeiro mês disponível do Orçamento;
+- em Junho de 2026, o default normalizado é Julho de 2026;
+- `12 meses` inclui o mês seleccionado e os 11 meses anteriores, sem recuar antes de Julho de 2026;
+- `YTD` vai de Janeiro do ano seleccionado até ao mês seleccionado;
+- `Ano` substitui `Ano em curso` apenas na secção de liquidez e mostra Janeiro a Dezembro do ano civil seleccionado;
+- a liquidez histórica deixou de ficar limitada aos meses anteriores à data actual;
+- a série carrega meses futuros quando fazem parte do intervalo seleccionado e usa `getSupabaseBudgetOverview` para reutilizar os cálculos mensais existentes;
+- visualizar o gráfico não grava dados novos;
+- os meses futuros podem reflectir transporte de saldos, movimentos realizados já introduzidos, débitos directos, Day to day, pagamentos de cartões, salário e linhas personalizadas;
+- a área XIRR dos investimentos manteve o selector validado anteriormente.
+
+Validações técnicas desta correcção:
+
+- `npm.cmd run lint` passou;
+- `npm.cmd run typecheck` passou;
+- `npm.cmd test` passou com permissão elevada: 28 ficheiros e 212 testes;
+- `npm.cmd run build` passou;
+- `git diff --check` passou, apenas com avisos CRLF já esperados.
+
+Nota da configuração visual do gráfico de liquidez em 27/06/2026:
+
+- a área `Rentabilidade dos investimentos (XIRR)` ficou inalterada;
+- o gráfico combinado `Liquidez e saldo mensal` passou a usar dois eixos Y independentes;
+- o eixo Y esquerdo representa `Saldo final`;
+- o eixo Y direito representa `Variação mensal`;
+- a linha `Saldo final` usa o eixo esquerdo;
+- as barras `Variação mensal` usam o eixo direito;
+- o domínio do eixo direito garante que o zero da variação mensal fica visível;
+- o tooltip da liquidez mantém os nomes explícitos das duas séries;
+- foram ajustados testes de componente para validar eixos, séries e manutenção da área XIRR.
+
+Validações técnicas desta configuração visual:
+
+- `npm.cmd run lint` passou;
+- `npm.cmd run typecheck` passou;
+- `npm.cmd test` passou com permissão elevada: 28 ficheiros e 212 testes;
+- `npm.cmd run build` passou;
+- `git diff --check` passou, apenas com avisos CRLF já esperados.
+
 ### 10.2 Problemas ainda existentes
 
 A Fase 2 aguarda validação manual desta revisão antes de commit.
@@ -710,12 +780,11 @@ A Fase 2 aguarda validação manual desta revisão antes de commit.
 Problemas confirmados:
 
 - aplicar as migrations `20260701009000_investment_cash_flows_and_valuations.sql`, `20260701010000_investment_assets_description.sql` e `20260701011000_investment_dates_before_budget_start.sql` antes de usar a tab Investimentos contra Supabase real, caso ainda não estejam aplicadas;
-- validar manualmente no browser a integração das valorizações de Investimentos com Orçamento e Património;
-- validar manualmente no browser o CRUD real da tab Investimentos;
+- validar manualmente no browser a reformulação da tab Histórico;
 - validar manualmente no browser a protecção de alterações históricas assim que existirem meses anteriores utilizáveis;
 - confirmar em browser que mudanças de mês preservam autosaves pendentes e usam o mês correcto;
 - continuar a validar totais horizontais e cartões superiores contra cenários reais com várias contas/cartões;
-- a integração de Investimentos com a tab Histórico ainda não foi implementada.
+- a validação técnica completa por `npm.cmd test` continua dependente de execução fora do sandbox quando o Vitest/esbuild é bloqueado pela pasta OneDrive.
 
 Não avançar para a Fase 3 antes de concluir estes pontos.
 
@@ -1136,7 +1205,7 @@ Estado actual:
 - interface activa sem campo `Nota` para fluxos e valorizações;
 - lista cronológica por investimento recolhida por defeito e expandida por investimento;
 - integrada com Orçamento e Património através das valorizações elegíveis em `investment_valuations`;
-- ainda não integrada com a tab Histórico;
+- integrada com a tab Histórico através de séries mensais de XIRR;
 - ainda sem gráficos.
 
 O módulo deve suportar:
@@ -1336,6 +1405,7 @@ Testes mínimos da Fase 2:
 - linhas calculadas não editáveis; **coberto para Saldo actual, Débitos directos, Day to day, Pagamentos de cartões e Salário**
 - tabela compacta.
 - Investimentos: domínio, XIRR, valorização mensal, CRUD de activos, fluxos, valorizações, eliminação segura, protecção histórica, UI sem notas, detalhe recolhível e integração com Orçamento/Património; **coberto por testes de domínio, serviço, actions, componente e página**
+- Histórico: séries de liquidez/orçamento, mês de referência, filtros de período com meses futuros, gráfico combinado, XIRR mensal por investimento/global, gaps e investimentos arquivados com histórico; **coberto por testes de domínio, componente e página**
 
 ## 19. Comandos úteis
 
@@ -1386,7 +1456,7 @@ Antes de alterar qualquer ficheiro, lê integralmente PROJECT_CONTEXT.md e inspe
 O próximo trabalho deve continuar exclusivamente na Fase 2:
 
 1. aplicar no Supabase real as migrations pendentes de Investimentos, quando for oportuno;
-2. validar manualmente no browser o CRUD de investimentos, fluxos e valorizações;
+2. validar manualmente no browser a tab Histórico reformulada;
 3. criar commit Git se a validação manual for aprovada;
-4. avançar depois para a integração de Investimentos com a tab Histórico;
+4. repetir `npm.cmd test` fora do sandbox, se necessário, por causa do bloqueio do Vitest/esbuild na pasta OneDrive;
 5. só depois considerar gráficos ou funcionalidades adicionais.
