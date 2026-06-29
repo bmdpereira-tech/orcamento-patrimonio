@@ -83,3 +83,165 @@ export function parseEuroCents(input: FormDataEntryValue | string | null | undef
 
   return assertCents(sign * (euros * 100 + cents));
 }
+
+class CurrencyExpressionParser {
+  private readonly source: string;
+  private index = 0;
+
+  constructor(input: string) {
+    this.source = input.replace(/\s+/g, "");
+  }
+
+  parse() {
+    if (!this.source) {
+      return 0;
+    }
+
+    const value = this.parseExpression();
+
+    if (value === null || this.index !== this.source.length || !Number.isFinite(value)) {
+      return null;
+    }
+
+    return value;
+  }
+
+  private parseExpression(): number | null {
+    let value = this.parseTerm();
+
+    if (value === null) {
+      return null;
+    }
+
+    while (this.peek() === "+" || this.peek() === "-") {
+      const operator = this.consume();
+      const nextValue = this.parseTerm();
+
+      if (nextValue === null) {
+        return null;
+      }
+
+      value = operator === "+" ? value + nextValue : value - nextValue;
+    }
+
+    return value;
+  }
+
+  private parseTerm(): number | null {
+    let value = this.parseFactor();
+
+    if (value === null) {
+      return null;
+    }
+
+    while (this.peek() === "*" || this.peek() === "/") {
+      const operator = this.consume();
+      const nextValue = this.parseFactor();
+
+      if (nextValue === null || (operator === "/" && nextValue === 0)) {
+        return null;
+      }
+
+      value = operator === "*" ? value * nextValue : value / nextValue;
+    }
+
+    return value;
+  }
+
+  private parseFactor(): number | null {
+    if (this.peek() === "+") {
+      this.consume();
+      return this.parseFactor();
+    }
+
+    if (this.peek() === "-") {
+      this.consume();
+      const value = this.parseFactor();
+
+      return value === null ? null : -value;
+    }
+
+    if (this.peek() === "(") {
+      this.consume();
+      const value = this.parseExpression();
+
+      if (value === null || this.peek() !== ")") {
+        return null;
+      }
+
+      this.consume();
+      return value;
+    }
+
+    return this.parseNumber();
+  }
+
+  private parseNumber(): number | null {
+    const start = this.index;
+    let hasDigit = false;
+    let hasDecimalSeparator = false;
+    let decimalDigitCount = 0;
+
+    while (this.index < this.source.length) {
+      const character = this.source[this.index];
+
+      if (character >= "0" && character <= "9") {
+        hasDigit = true;
+
+        if (hasDecimalSeparator) {
+          decimalDigitCount += 1;
+        }
+
+        this.index += 1;
+        continue;
+      }
+
+      if (character === "," || character === ".") {
+        if (hasDecimalSeparator) {
+          return null;
+        }
+
+        hasDecimalSeparator = true;
+        this.index += 1;
+        continue;
+      }
+
+      break;
+    }
+
+    if (!hasDigit || decimalDigitCount > 2) {
+      return null;
+    }
+
+    const rawNumber = this.source.slice(start, this.index).replace(",", ".");
+    const value = Number(rawNumber);
+
+    return Number.isFinite(value) ? value : null;
+  }
+
+  private peek() {
+    return this.source[this.index] ?? "";
+  }
+
+  private consume() {
+    const character = this.peek();
+    this.index += 1;
+    return character;
+  }
+}
+
+export function evaluateCurrencyExpressionCents(input: string): Cents | null {
+  const value = new CurrencyExpressionParser(input).parse();
+
+  if (value === null) {
+    return null;
+  }
+
+  const cents = Math.round(value * 100);
+
+  if (!Number.isSafeInteger(cents)) {
+    return null;
+  }
+
+  return assertCents(Object.is(cents, -0) ? 0 : cents);
+}

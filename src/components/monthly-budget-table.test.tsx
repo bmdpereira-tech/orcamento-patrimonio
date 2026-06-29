@@ -229,6 +229,56 @@ describe("MonthlyBudgetTable", () => {
     expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("60,00 €").length).toBeGreaterThan(0);
   });
 
+  it("evaluates realised movement expressions, reformats on Enter and saves only the final value", async () => {
+    const saveBudgetAction = vi.fn<(formData: FormData) => Promise<{ ok: true }>>(async () => ({ ok: true }));
+
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({ currentBalanceCents: 100_00, directDebitsCents: -10_00 })}
+        editable
+        saveBudgetAction={saveBudgetAction}
+      />,
+    );
+
+    const input = screen.getByLabelText("Movimentos realizados — Conta A") as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "-1000+2200" } });
+
+    expect(within(screen.getByRole("row", { name: /Saldo actual/ })).getAllByText("1 300,00 €").length).toBeGreaterThan(0);
+    expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("1 290,00 €").length).toBeGreaterThan(0);
+
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    await waitFor(() => expect(saveBudgetAction).toHaveBeenCalledTimes(1));
+    expect((saveBudgetAction.mock.calls[0]?.[0] as FormData).get("cell:realised-movements:account-a")).toBe(
+      "1200,00",
+    );
+    expect(input.value).toBe("1 200,00 €");
+  });
+
+  it("does not save invalid realised movement expressions and restores the previous value", async () => {
+    vi.useFakeTimers();
+    const saveBudgetAction = vi.fn<(formData: FormData) => Promise<{ ok: true }>>(async () => ({ ok: true }));
+
+    render(<MonthlyBudgetTable overview={createOverview()} editable saveBudgetAction={saveBudgetAction} />);
+
+    const input = screen.getByLabelText("Movimentos realizados — Conta A") as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "abc+100" } });
+
+    expect(within(screen.getByRole("row", { name: /Saldo actual/ })).getAllByText("75,00 €").length).toBeGreaterThan(0);
+
+    await act(async () => {
+      fireEvent.blur(input);
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    expect(saveBudgetAction).not.toHaveBeenCalled();
+    expect(input.value).toBe("(25,00 €)");
+    expect(screen.getByText("Erro ao guardar")).toBeTruthy();
+    expect(screen.getByTitle("Expressão inválida em Movimentos realizados.")).toBeTruthy();
+  });
+
   it("renders editable realised movements with read-only currency formatting until focused", () => {
     const { rerender } = render(
       <MonthlyBudgetTable

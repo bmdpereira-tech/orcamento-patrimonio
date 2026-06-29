@@ -25,6 +25,7 @@ import {
   type HistoricalImpactRequiredActionResult,
 } from "@/domain/budget/historical-impact";
 import {
+  evaluateCurrencyExpressionCents,
   formatEditableEuroCents,
   formatEuroCents,
   parseEuroCents,
@@ -159,10 +160,30 @@ function parseCurrencyInput(value: string) {
   return tryParseCurrencyInput(value) ?? 0;
 }
 
+function parseEditableCellInput(rowKey: EditableBudgetRowKey, value: string, fallback = 0) {
+  const parsed =
+    rowKey === "realised-movements" ? evaluateCurrencyExpressionCents(value) : tryParseCurrencyInput(value);
+
+  return parsed ?? fallback;
+}
+
+function normaliseEditableCellInput(rowKey: EditableBudgetRowKey, value: string) {
+  const parsed =
+    rowKey === "realised-movements" ? evaluateCurrencyExpressionCents(value) : tryParseCurrencyInput(value);
+
+  return parsed === null ? null : formatEditableEuroCents(parsed);
+}
+
 function normaliseCurrencyInput(value: string) {
   const parsed = tryParseCurrencyInput(value);
 
   return parsed === null ? value : formatEditableEuroCents(parsed);
+}
+
+function getInvalidEditableCellMessage(rowKey: EditableBudgetRowKey) {
+  return rowKey === "realised-movements"
+    ? "Expressão inválida em Movimentos realizados."
+    : "Valor inválido na tabela mensal.";
 }
 
 function getSnapshotValue(snapshot: MonthlyAccountSnapshot, rowKey: EditableBudgetRowKey) {
@@ -347,9 +368,17 @@ function calculateDisplayBudgetState({
     const sourceSnapshot = snapshotByAccountId.get(account.id);
     const initialBalanceCents =
       overview.month === FIRST_MONTH
-        ? parseCurrencyInput(cellValues["initial-balance"][account.id] ?? "0")
+        ? parseEditableCellInput(
+            "initial-balance",
+            cellValues["initial-balance"][account.id] ?? "0",
+            sourceSnapshot?.initialBalanceCents ?? 0,
+          )
         : sourceSnapshot?.initialBalanceCents ?? 0;
-    const realisedMovementsCents = parseCurrencyInput(cellValues["realised-movements"][account.id] ?? "0");
+    const realisedMovementsCents = parseEditableCellInput(
+      "realised-movements",
+      cellValues["realised-movements"][account.id] ?? "0",
+      sourceSnapshot?.realisedMovementsCents ?? 0,
+    );
     const currentBalanceCents = sumCents([initialBalanceCents, realisedMovementsCents]);
     const directDebitsCents = hasDirectDebitOccurrences
       ? directDebitAmountsByAccount.get(account.id) ?? 0
@@ -467,6 +496,34 @@ function createSaveSignature({
   });
 }
 
+function normaliseEditableCellValuesForSave({
+  overview,
+  cellValues,
+}: {
+  overview: BudgetOverview;
+  cellValues: EditableCellValues;
+}):
+  | { ok: true; cellValues: EditableCellValues }
+  | { ok: false; error: string } {
+  const normalisedCellValues = {} as EditableCellValues;
+
+  for (const rowKey of EDITABLE_BUDGET_ROW_KEYS) {
+    normalisedCellValues[rowKey] = {};
+
+    for (const account of overview.accounts) {
+      const normalisedValue = normaliseEditableCellInput(rowKey, cellValues[rowKey][account.id] ?? "0");
+
+      if (normalisedValue === null) {
+        return { ok: false, error: getInvalidEditableCellMessage(rowKey) };
+      }
+
+      normalisedCellValues[rowKey][account.id] = normalisedValue;
+    }
+  }
+
+  return { ok: true, cellValues: normalisedCellValues };
+}
+
 function isEditableBudgetRowKey(rowKey?: string): rowKey is EditableBudgetRowKey {
   return EDITABLE_BUDGET_ROW_KEYS.some((editableRowKey) => editableRowKey === rowKey);
 }
@@ -496,15 +553,22 @@ function TableMoneyInput({
   ariaLabel,
   onChange,
   onBlur,
+  commitOnEnter = false,
 }: {
   value: string;
   ariaLabel: string;
   onChange: (value: string) => void;
   onBlur: () => void;
+  commitOnEnter?: boolean;
 }) {
   const [isFocused, setIsFocused] = useState(false);
+  const skipNextBlurRef = useRef(false);
   const parsedValue = tryParseCurrencyInput(value);
   const displayValue = !isFocused && parsedValue !== null ? formatEuroCents(parsedValue) : value;
+  const commitValue = () => {
+    setIsFocused(false);
+    onBlur();
+  };
 
   return (
     <input
@@ -512,8 +576,23 @@ function TableMoneyInput({
       onChange={(event) => onChange(event.target.value)}
       onFocus={() => setIsFocused(true)}
       onBlur={() => {
-        setIsFocused(false);
-        onBlur();
+        if (skipNextBlurRef.current) {
+          skipNextBlurRef.current = false;
+          return;
+        }
+
+        commitValue();
+      }}
+      onKeyDown={(event) => {
+        if (commitOnEnter && event.key === "Enter") {
+          event.preventDefault();
+          skipNextBlurRef.current = true;
+          commitValue();
+          event.currentTarget.blur();
+          queueMicrotask(() => {
+            skipNextBlurRef.current = false;
+          });
+        }
       }}
       inputMode="decimal"
       aria-label={ariaLabel}
@@ -551,6 +630,7 @@ function EditableMoneyCell({
       ariaLabel={`${row.label} — ${accountName}`}
       onChange={onChange}
       onBlur={onBlur}
+      commitOnEnter={row.rowKey === "realised-movements"}
     />
   );
 }
@@ -1373,9 +1453,22 @@ export function MonthlyBudgetTable({
         const currentOverview = overviewRef.current;
         const currentCellValues = cellValuesRef.current;
         const currentCustomItems = customItemsRef.current;
-        const signature = createSaveSignature({
+        const normalisedCellValuesResult = normaliseEditableCellValuesForSave({
           overview: currentOverview,
           cellValues: currentCellValues,
+        });
+
+        if (!normalisedCellValuesResult.ok) {
+          dirtyRef.current = false;
+          setSaveStatus("error");
+          setSaveError(normalisedCellValuesResult.error);
+          break;
+        }
+
+        const currentCellValuesForSave = normalisedCellValuesResult.cellValues;
+        const signature = createSaveSignature({
+          overview: currentOverview,
+          cellValues: currentCellValuesForSave,
           customItems: currentCustomItems,
         });
 
@@ -1390,7 +1483,7 @@ export function MonthlyBudgetTable({
 
         const formData = buildSaveFormData({
           overview: currentOverview,
-          cellValues: currentCellValues,
+          cellValues: currentCellValuesForSave,
           customItems: currentCustomItems,
         });
         const result = await action(formData);
@@ -1418,7 +1511,7 @@ export function MonthlyBudgetTable({
               }
 
               lastSavedSignatureRef.current = signature;
-              lastSavedCellValuesRef.current = currentCellValues;
+              lastSavedCellValuesRef.current = currentCellValuesForSave;
               lastSavedCustomItemsRef.current = currentCustomItems;
               dirtyRef.current = false;
               setSaveStatus("saved");
@@ -1436,7 +1529,7 @@ export function MonthlyBudgetTable({
         }
 
         lastSavedSignatureRef.current = signature;
-        lastSavedCellValuesRef.current = currentCellValues;
+        lastSavedCellValuesRef.current = currentCellValuesForSave;
         lastSavedCustomItemsRef.current = currentCustomItems;
 
         if (saveAfterCurrentRef.current || dirtyRef.current) {
@@ -1481,13 +1574,38 @@ export function MonthlyBudgetTable({
 
   const normaliseCellValue = useCallback(
     (rowKey: EditableBudgetRowKey, accountId: string) => {
+      const currentValue = cellValuesRef.current[rowKey][accountId] ?? "0";
+      const normalisedValue = normaliseEditableCellInput(rowKey, currentValue);
+
+      if (normalisedValue === null) {
+        const previousValue = lastSavedCellValuesRef.current[rowKey]?.[accountId] ?? "0,00";
+
+        if (debounceTimeoutRef.current) {
+          clearTimeout(debounceTimeoutRef.current);
+          debounceTimeoutRef.current = null;
+        }
+
+        dirtyRef.current = false;
+        setSaveStatus("error");
+        setSaveError(getInvalidEditableCellMessage(rowKey));
+        updateCellValues((current) => ({
+          ...current,
+          [rowKey]: {
+            ...current[rowKey],
+            [accountId]: previousValue,
+          },
+        }));
+        return false;
+      }
+
       updateCellValues((current) => ({
         ...current,
         [rowKey]: {
           ...current[rowKey],
-          [accountId]: normaliseCurrencyInput(current[rowKey][accountId] ?? "0"),
+          [accountId]: normalisedValue,
         },
       }));
+      return true;
     },
     [updateCellValues],
   );
@@ -2134,11 +2252,15 @@ export function MonthlyBudgetTable({
                                 scheduleSave();
                               }}
                               onBlur={() => {
+                                let shouldFlush = true;
+
                                 if (editableRowKey) {
-                                  normaliseCellValue(editableRowKey, account.id);
+                                  shouldFlush = normaliseCellValue(editableRowKey, account.id);
                                 }
 
-                                void flushSave();
+                                if (shouldFlush) {
+                                  void flushSave();
+                                }
                               }}
                             />
                           ) : (

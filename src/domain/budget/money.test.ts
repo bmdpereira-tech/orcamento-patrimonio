@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { assertCents, formatEditableEuroCents, formatEuroCents, parseEuroCents, sumCents } from "./money";
+import {
+  assertCents,
+  evaluateCurrencyExpressionCents,
+  formatEditableEuroCents,
+  formatEuroCents,
+  parseEuroCents,
+  sumCents,
+} from "./money";
 
 describe("money helpers", () => {
   it("formats zero as an en dash", () => {
@@ -30,5 +37,21 @@ describe("money helpers", () => {
     expect(parseEuroCents("1 234,56 €")).toBe(123456);
     expect(parseEuroCents("(1 234,56 €)")).toBe(-123456);
     expect(parseEuroCents("-1234,5")).toBe(-123450);
+  });
+
+  it("evaluates simple currency expressions into cents without executing arbitrary input", () => {
+    expect(evaluateCurrencyExpressionCents("1200")).toBe(120000);
+    expect(evaluateCurrencyExpressionCents("-1000+2200")).toBe(120000);
+    expect(evaluateCurrencyExpressionCents("500+250-100")).toBe(65000);
+    expect(evaluateCurrencyExpressionCents("(1000+200)/2")).toBe(60000);
+    expect(evaluateCurrencyExpressionCents("1500/2")).toBe(75000);
+    expect(evaluateCurrencyExpressionCents("1,50*2")).toBe(300);
+  });
+
+  it("rejects invalid currency expressions", () => {
+    expect(evaluateCurrencyExpressionCents("abc+100")).toBeNull();
+    expect(evaluateCurrencyExpressionCents("100/0")).toBeNull();
+    expect(evaluateCurrencyExpressionCents("1000+")).toBeNull();
+    expect(evaluateCurrencyExpressionCents("Math.max(1,2)")).toBeNull();
   });
 });
