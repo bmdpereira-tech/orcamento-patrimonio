@@ -201,7 +201,7 @@ describe("MonthlyBudgetTable", () => {
     expect(screen.getByLabelText("Saldo inicial — Conta A")).toBeTruthy();
   });
 
-  it("updates current and final balances from positive and negative realised movements", () => {
+  it("updates current and final balances from positive and negative realised movements only after commit", () => {
     render(
       <MonthlyBudgetTable
         overview={createOverview({ currentBalanceCents: 100_00, directDebitsCents: -10_00 })}
@@ -218,12 +218,25 @@ describe("MonthlyBudgetTable", () => {
     fireEvent.blur(input);
     expect((input as HTMLInputElement).value).toBe("–");
 
+    fireEvent.focus(input);
     fireEvent.change(input, { target: { value: "25,00" } });
+
+    expect((input as HTMLInputElement).value).toBe("25,00");
+    expect(within(screen.getByRole("row", { name: /Saldo actual/ })).getAllByText("100,00 €").length).toBeGreaterThan(0);
+    expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("90,00 €").length).toBeGreaterThan(0);
+
+    fireEvent.blur(input);
 
     expect(within(screen.getByRole("row", { name: /Saldo actual/ })).getAllByText("125,00 €").length).toBeGreaterThan(0);
     expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("115,00 €").length).toBeGreaterThan(0);
 
+    fireEvent.focus(input);
     fireEvent.change(input, { target: { value: "-30,00" } });
+
+    expect((input as HTMLInputElement).value).toBe("-30,00");
+    expect(within(screen.getByRole("row", { name: /Saldo actual/ })).getAllByText("125,00 €").length).toBeGreaterThan(0);
+
+    fireEvent.blur(input);
 
     expect(within(screen.getByRole("row", { name: /Saldo actual/ })).getAllByText("70,00 €").length).toBeGreaterThan(0);
     expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("60,00 €").length).toBeGreaterThan(0);
@@ -244,8 +257,10 @@ describe("MonthlyBudgetTable", () => {
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: "-1000+2200" } });
 
-    expect(within(screen.getByRole("row", { name: /Saldo actual/ })).getAllByText("1 300,00 €").length).toBeGreaterThan(0);
-    expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("1 290,00 €").length).toBeGreaterThan(0);
+    expect(input.value).toBe("-1000+2200");
+    expect(within(screen.getByRole("row", { name: /Saldo actual/ })).getAllByText("100,00 €").length).toBeGreaterThan(0);
+    expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("90,00 €").length).toBeGreaterThan(0);
+    expect(saveBudgetAction).not.toHaveBeenCalled();
 
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
@@ -254,6 +269,34 @@ describe("MonthlyBudgetTable", () => {
       "1200,00",
     );
     expect(input.value).toBe("1 200,00 €");
+  });
+
+  it("evaluates realised movement expressions on blur", async () => {
+    const saveBudgetAction = vi.fn<(formData: FormData) => Promise<{ ok: true }>>(async () => ({ ok: true }));
+
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({ currentBalanceCents: 100_00, directDebitsCents: -10_00 })}
+        editable
+        saveBudgetAction={saveBudgetAction}
+      />,
+    );
+
+    const input = screen.getByLabelText("Movimentos realizados — Conta A") as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "(1000+200)/2" } });
+
+    expect(input.value).toBe("(1000+200)/2");
+    expect(within(screen.getByRole("row", { name: /Saldo actual/ })).getAllByText("100,00 €").length).toBeGreaterThan(0);
+
+    fireEvent.blur(input);
+
+    await waitFor(() => expect(saveBudgetAction).toHaveBeenCalledTimes(1));
+    expect((saveBudgetAction.mock.calls[0]?.[0] as FormData).get("cell:realised-movements:account-a")).toBe(
+      "600,00",
+    );
+    expect(input.value).toBe("600,00 €");
+    expect(within(screen.getByRole("row", { name: /Saldo actual/ })).getAllByText("700,00 €").length).toBeGreaterThan(0);
   });
 
   it("does not save invalid realised movement expressions and restores the previous value", async () => {
@@ -266,6 +309,7 @@ describe("MonthlyBudgetTable", () => {
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: "abc+100" } });
 
+    expect(input.value).toBe("abc+100");
     expect(within(screen.getByRole("row", { name: /Saldo actual/ })).getAllByText("75,00 €").length).toBeGreaterThan(0);
 
     await act(async () => {
@@ -277,6 +321,34 @@ describe("MonthlyBudgetTable", () => {
     expect(input.value).toBe("(25,00 €)");
     expect(screen.getByText("Erro ao guardar")).toBeTruthy();
     expect(screen.getByTitle("Expressão inválida em Movimentos realizados.")).toBeTruthy();
+  });
+
+  it("keeps expression support exclusive to realised movements", () => {
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          currentBalanceCents: 100_00,
+          customItems: [
+            {
+              id: "custom-a",
+              month: "2026-07",
+              description: "Ajuste",
+              sortOrder: 10,
+              valuesByAccountId: { "account-a": 0 },
+            },
+          ],
+        })}
+        editable
+      />,
+    );
+
+    const customInput = screen.getByLabelText("Ajuste — Conta A") as HTMLInputElement;
+    fireEvent.focus(customInput);
+    fireEvent.change(customInput, { target: { value: "100+25" } });
+
+    expect(customInput.value).toBe("100+25");
+    expect(within(screen.getByRole("row", { name: /Saldo final/ })).getAllByText("100,00 €").length).toBeGreaterThan(0);
+    expect(within(screen.getByRole("row", { name: /Ajuste/ })).getAllByText("–").length).toBeGreaterThan(0);
   });
 
   it("renders editable realised movements with read-only currency formatting until focused", () => {
@@ -1010,9 +1082,25 @@ describe("MonthlyBudgetTable", () => {
     vi.useFakeTimers();
     const saveBudgetAction = vi.fn<(formData: FormData) => Promise<{ ok: true }>>(async () => ({ ok: true }));
 
-    render(<MonthlyBudgetTable overview={createOverview()} editable saveBudgetAction={saveBudgetAction} />);
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          customItems: [
+            {
+              id: "custom-a",
+              month: "2026-07",
+              description: "Ajuste",
+              sortOrder: 10,
+              valuesByAccountId: { "account-a": 0 },
+            },
+          ],
+        })}
+        editable
+        saveBudgetAction={saveBudgetAction}
+      />,
+    );
 
-    const input = screen.getByLabelText("Movimentos realizados — Conta A");
+    const input = screen.getByLabelText("Ajuste — Conta A");
     fireEvent.change(input, { target: { value: "80,00" } });
     fireEvent.change(input, { target: { value: "90,50" } });
 
@@ -1028,7 +1116,7 @@ describe("MonthlyBudgetTable", () => {
     });
 
     expect(saveBudgetAction).toHaveBeenCalledTimes(1);
-    expect((saveBudgetAction.mock.calls[0]?.[0] as FormData).get("cell:realised-movements:account-a")).toBe(
+    expect((saveBudgetAction.mock.calls[0]?.[0] as FormData).get("custom:custom-a:account:account-a")).toBe(
       "90,50",
     );
   });
@@ -1040,9 +1128,25 @@ describe("MonthlyBudgetTable", () => {
       error: "Falhou",
     }));
 
-    render(<MonthlyBudgetTable overview={createOverview()} editable saveBudgetAction={saveBudgetAction} />);
+    render(
+      <MonthlyBudgetTable
+        overview={createOverview({
+          customItems: [
+            {
+              id: "custom-a",
+              month: "2026-07",
+              description: "Ajuste",
+              sortOrder: 10,
+              valuesByAccountId: { "account-a": 0 },
+            },
+          ],
+        })}
+        editable
+        saveBudgetAction={saveBudgetAction}
+      />,
+    );
 
-    fireEvent.change(screen.getByLabelText("Movimentos realizados — Conta A"), { target: { value: "80,00" } });
+    fireEvent.change(screen.getByLabelText("Ajuste — Conta A"), { target: { value: "80,00" } });
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(650);
@@ -1064,6 +1168,7 @@ describe("MonthlyBudgetTable", () => {
     );
 
     const input = screen.getByLabelText("Movimentos realizados — Conta A") as HTMLInputElement;
+    fireEvent.focus(input);
     fireEvent.change(input, { target: { value: "80,00" } });
     await act(async () => {
       fireEvent.blur(input);
@@ -1099,6 +1204,7 @@ describe("MonthlyBudgetTable", () => {
       />,
     );
 
+    fireEvent.focus(screen.getByLabelText("Movimentos realizados — Conta A"));
     fireEvent.change(screen.getByLabelText("Movimentos realizados — Conta A"), { target: { value: "80,00" } });
     fireEvent.blur(screen.getByLabelText("Movimentos realizados — Conta A"));
 

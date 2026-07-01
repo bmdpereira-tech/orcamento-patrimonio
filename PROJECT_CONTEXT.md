@@ -1,6 +1,6 @@
 # PROJECT_CONTEXT.md
 
-> **Última actualização:** 29/06/2026
+> **Última actualização:** 01/07/2026
 > **Projecto:** App Orçamento  
 > **Pasta local:** `C:\Users\brunopereira\OneDrive - Ever You\Apps\Orçamento`
 
@@ -822,6 +822,9 @@ Nota das expressões em `Movimentos realizados` em 29/06/2026:
 - a avaliação é feita por `evaluateCurrencyExpressionCents` em `src/domain/budget/money.ts`, com parser próprio e seguro;
 - não é usado `eval()` nem execução de código arbitrário;
 - ao carregar Enter ou ao sair do campo, a expressão válida é convertida para o resultado final em cêntimos, guardando apenas o valor numérico final;
+- correcção posterior em 01/07/2026: enquanto o campo está em edição, o texto bruto introduzido pelo utilizador é mantido localmente e não actualiza os cálculos, o autosave nem o estado financeiro confirmado;
+- a avaliação da expressão passou a acontecer apenas no commit explícito da edição: Enter, Tab/mudança de célula ou blur;
+- expressões parciais como `-1000+` ou `(1000+200` não são avaliadas durante a escrita;
 - visualmente, o campo volta à formatação monetária normal (`€`, separador de milhares, negativos entre parêntesis e zero como `–`);
 - se a expressão for inválida, a aplicação não grava, repõe o valor anterior e mostra feedback discreto no estado de gravação da tabela;
 - linhas personalizadas, `Saldo inicial`, cartões, salário e restantes linhas calculadas/read-only continuam com o comportamento anterior.
@@ -830,9 +833,10 @@ Validações técnicas desta alteração:
 
 - teste focado de domínio `src/domain/budget/money.test.ts` passou com permissão elevada: 1 ficheiro e 9 testes;
 - teste focado da tabela mensal `src/components/monthly-budget-table.test.tsx` passou com permissão elevada: 1 ficheiro e 36 testes;
+- após a correcção de commit-only, teste focado da tabela mensal passou com permissão elevada: 1 ficheiro e 38 testes;
 - `npm.cmd run lint` passou;
 - `npm.cmd run typecheck` passou;
-- `npm.cmd test` passou com permissão elevada: 28 ficheiros e 221 testes;
+- `npm.cmd test` passou com permissão elevada: 28 ficheiros e 223 testes;
 - `npm.cmd run build` passou;
 - `git diff --check` passou, apenas com avisos CRLF já esperados.
 
@@ -900,7 +904,9 @@ Regras:
 - campo vazio ou zero equivale a movimento zero;
 - aceita valores positivos, negativos e decimais;
 - aceita expressões matemáticas simples com `+`, `-`, `*`, `/` e parêntesis, por exemplo `-1000+2200` ou `(1000+200)/2`;
-- a expressão é avaliada apenas no cliente por parser seguro e o valor persistido continua a ser apenas o resultado final em cêntimos;
+- durante a edição, o texto bruto é mantido no campo e não recalcula a tabela;
+- a expressão é avaliada apenas no commit da edição, no cliente, por parser seguro;
+- o valor persistido continua a ser apenas o resultado final em cêntimos;
 - expressões inválidas não são gravadas e repõem o valor anterior;
 - é persistido em `account_month_states.realised_movements_override_cents`;
 - mês futuro sem movimento introduzido usa `Movimentos realizados = 0`;

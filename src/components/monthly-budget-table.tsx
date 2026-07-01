@@ -553,28 +553,59 @@ function TableMoneyInput({
   ariaLabel,
   onChange,
   onBlur,
+  onCommit,
+  commitOnly = false,
   commitOnEnter = false,
 }: {
   value: string;
   ariaLabel: string;
   onChange: (value: string) => void;
   onBlur: () => void;
+  onCommit?: (value: string) => void;
+  commitOnly?: boolean;
   commitOnEnter?: boolean;
 }) {
   const [isFocused, setIsFocused] = useState(false);
+  const [draftValue, setDraftValue] = useState(value);
+  const draftValueRef = useRef(value);
   const skipNextBlurRef = useRef(false);
-  const parsedValue = tryParseCurrencyInput(value);
-  const displayValue = !isFocused && parsedValue !== null ? formatEuroCents(parsedValue) : value;
+  const activeValue = commitOnly && isFocused ? draftValue : value;
+  const parsedValue = tryParseCurrencyInput(activeValue);
+  const displayValue = !isFocused && parsedValue !== null ? formatEuroCents(parsedValue) : activeValue;
   const commitValue = () => {
     setIsFocused(false);
+    if (commitOnly) {
+      onCommit?.(draftValueRef.current);
+      return;
+    }
+
     onBlur();
   };
+
+  useEffect(() => {
+    if (!isFocused) {
+      setDraftValue(value);
+      draftValueRef.current = value;
+    }
+  }, [isFocused, value]);
 
   return (
     <input
       value={displayValue}
-      onChange={(event) => onChange(event.target.value)}
-      onFocus={() => setIsFocused(true)}
+      onChange={(event) => {
+        if (commitOnly) {
+          setDraftValue(event.target.value);
+          draftValueRef.current = event.target.value;
+          return;
+        }
+
+        onChange(event.target.value);
+      }}
+      onFocus={() => {
+        setIsFocused(true);
+        setDraftValue(value);
+        draftValueRef.current = value;
+      }}
       onBlur={() => {
         if (skipNextBlurRef.current) {
           skipNextBlurRef.current = false;
@@ -609,6 +640,7 @@ function EditableMoneyCell({
   value,
   onChange,
   onBlur,
+  onCommit,
 }: {
   row: BudgetTableRow;
   accountId: string;
@@ -617,6 +649,7 @@ function EditableMoneyCell({
   value: string;
   onChange: (value: string) => void;
   onBlur: () => void;
+  onCommit?: (value: string) => void;
 }) {
   const displayValue = row.valuesByAccountId[accountId] ?? 0;
 
@@ -630,6 +663,8 @@ function EditableMoneyCell({
       ariaLabel={`${row.label} — ${accountName}`}
       onChange={onChange}
       onBlur={onBlur}
+      onCommit={onCommit}
+      commitOnly={row.rowKey === "realised-movements"}
       commitOnEnter={row.rowKey === "realised-movements"}
     />
   );
@@ -1098,6 +1133,20 @@ export function MonthlyBudgetTable({
       cellValuesRef.current = next;
       return next;
     });
+  }, []);
+
+  const setCellValue = useCallback((rowKey: EditableBudgetRowKey, accountId: string, value: string) => {
+    const current = cellValuesRef.current;
+    const next = {
+      ...current,
+      [rowKey]: {
+        ...current[rowKey],
+        [accountId]: value,
+      },
+    };
+
+    cellValuesRef.current = next;
+    setCellValues(next);
   }, []);
 
   const updateCustomItems = useCallback((updater: (current: LocalCustomBudgetItem[]) => LocalCustomBudgetItem[]) => {
@@ -1588,26 +1637,42 @@ export function MonthlyBudgetTable({
         dirtyRef.current = false;
         setSaveStatus("error");
         setSaveError(getInvalidEditableCellMessage(rowKey));
-        updateCellValues((current) => ({
-          ...current,
-          [rowKey]: {
-            ...current[rowKey],
-            [accountId]: previousValue,
-          },
-        }));
+        setCellValue(rowKey, accountId, previousValue);
         return false;
       }
 
-      updateCellValues((current) => ({
-        ...current,
-        [rowKey]: {
-          ...current[rowKey],
-          [accountId]: normalisedValue,
-        },
-      }));
+      setCellValue(rowKey, accountId, normalisedValue);
       return true;
     },
-    [updateCellValues],
+    [setCellValue],
+  );
+
+  const commitCellValue = useCallback(
+    (rowKey: EditableBudgetRowKey, accountId: string, value: string) => {
+      const normalisedValue = normaliseEditableCellInput(rowKey, value);
+
+      if (normalisedValue === null) {
+        const previousValue = lastSavedCellValuesRef.current[rowKey]?.[accountId] ?? "0,00";
+
+        if (debounceTimeoutRef.current) {
+          clearTimeout(debounceTimeoutRef.current);
+          debounceTimeoutRef.current = null;
+        }
+
+        dirtyRef.current = false;
+        setCellValue(rowKey, accountId, previousValue);
+        setSaveStatus("error");
+        setSaveError(getInvalidEditableCellMessage(rowKey));
+        return;
+      }
+
+      setCellValue(rowKey, accountId, normalisedValue);
+      dirtyRef.current = true;
+      setSaveStatus("saving");
+      setSaveError(null);
+      void flushSave();
+    },
+    [flushSave, setCellValue],
   );
 
   const normaliseCustomValue = useCallback(
@@ -2242,6 +2307,10 @@ export function MonthlyBudgetTable({
                                   return;
                                 }
 
+                                if (editableRowKey === "realised-movements") {
+                                  return;
+                                }
+
                                 updateCellValues((current) => ({
                                   ...current,
                                   [editableRowKey]: {
@@ -2250,6 +2319,13 @@ export function MonthlyBudgetTable({
                                   },
                                 }));
                                 scheduleSave();
+                              }}
+                              onCommit={(value) => {
+                                if (!editableRowKey) {
+                                  return;
+                                }
+
+                                commitCellValue(editableRowKey, account.id, value);
                               }}
                               onBlur={() => {
                                 let shouldFlush = true;
