@@ -139,4 +139,15 @@ describe("BudgetPage", () => {
     expect(screen.getAllByText("Património líquido").length).toBeGreaterThan(0);
     expect(screen.getAllByText("10 100,00 €").length).toBeGreaterThan(0);
   });
+
+  it("does not render or calculate the autonomous IGCP table in the monthly budget", async () => {
+    const page = await BudgetPage({
+      searchParams: Promise.resolve({ month: "2026-07" }),
+    });
+
+    render(page);
+
+    expect(screen.queryByRole("heading", { name: "Juros trimestrais previstos" })).toBeNull();
+    expect(screen.queryByText("Juro previsto TRIMESTRAL - líquido de retenção na fonte 28%")).toBeNull();
+  });
 });

@@ -27,6 +27,7 @@ A aplicação deve permitir acompanhar:
 - despesas quotidianas;
 - entradas e despesas extraordinárias;
 - investimentos;
+- certificados IGCP / juros trimestrais previstos;
 - património líquido.
 
 Toda a interface deve usar português de Portugal.
@@ -69,9 +70,26 @@ A aplicação utiliza actualmente:
 - serviço `accounts.ts`
 - serviço/cálculo `monthly-overview.ts`
 - componente `account-management.tsx`
-- páginas de Orçamento, Histórico, Contas, Débitos directos, Investimentos e Configurações.
+- páginas de Orçamento, Histórico, Contas, Débitos directos, Investimentos, IGCP e Configurações.
 
 Antes de alterar qualquer área, confirmar os caminhos exactos no código actual.
+
+Header actual:
+
+- `src/components/app-shell.tsx` organiza o topo numa única linha horizontal compacta em desktop/laptop;
+- a linha contém logo/nome da app à esquerda, navegação principal ao centro/direita e `Terminar sessão` à direita;
+- a navegação principal inclui Orçamento, Histórico, Contas, Débitos directos, Investimentos, IGCP e Configurações;
+- a quebra/adaptação do menu fica reservada para ecrãs pequenos/mobile;
+- a altura pretendida em desktop deve ficar aproximadamente entre 64px e 76px;
+- o menu `IGCP` não deve usar o ícone `%`; usa um ícone neutro de recibo/documento para manter a leitura visual apenas como `IGCP`.
+
+Validações técnicas da correcção visual do header em 01/07/2026:
+
+- `npm.cmd run lint` passou;
+- `npm.cmd run typecheck` passou;
+- `npm.cmd test` passou com 32 ficheiros de teste e 237 testes; foi executado fora do sandbox porque o Vitest falhou no sandbox ao carregar `vitest.config.ts` na pasta OneDrive;
+- `npm.cmd run build` passou;
+- `git diff --check` passou; apenas reportou avisos de normalização LF/CRLF em ficheiros editados.
 
 ## 5. Git local
 
@@ -848,7 +866,7 @@ Pontos operacionais antes de abrir a app em produção:
 
 - configurar no Vercel as variáveis `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `APP_PASSWORD_HASH` e `APP_SESSION_SECRET`;
 - confirmar no Vercel que o branch de produção aponta para o branch Git correcto;
-- executar um smoke test autenticado após o primeiro deploy em `/orcamento`, `/historico`, `/contas`, `/debitos-directos`, `/investimentos` e `/configuracoes`;
+- executar um smoke test autenticado após o primeiro deploy em `/orcamento`, `/historico`, `/contas`, `/debitos-directos`, `/investimentos`, `/igcp` e `/configuracoes`;
 - manter `SUPABASE_SERVICE_ROLE_KEY` restrita ao ambiente servidor/Vercel e nunca prefixá-la com `NEXT_PUBLIC_`.
 
 ## 11. Regras funcionais do Orçamento mensal
@@ -1424,6 +1442,89 @@ A linha deve ser:
 - não guardada como duplicação manual mensal.
 - baseada em `investment_valuations`, não em `investment_month_values`.
 
+## 16-A. IGCP / Certificados
+
+O submenu `IGCP` é uma página autónoma em `/igcp`, criada para calcular juros trimestrais líquidos previstos de subscrições IGCP/Certificados.
+
+Regras de isolamento:
+
+- não tem ligação funcional com a tabela mensal;
+- não altera contas;
+- não entra em Net Assets/Património líquido;
+- não lê nem escreve movimentos previstos ou realizados;
+- não altera Histórico, Débitos directos, Investimentos ou Configurações.
+
+Implementação actual:
+
+- rota: `src/app/(app)/igcp/page.tsx`;
+- componente client: `src/components/igcp-management.tsx`;
+- domínio financeiro: `src/domain/budget/igcp.ts`;
+- persistência local: `localStorage` na chave versionada `orcamento.igcp.rows.v1`;
+- sem migration nova e sem ligação Supabase nova.
+
+A tabela vem pré-carregada com as 9 subscrições indicadas no pedido de 01/07/2026.
+
+Campos editáveis por linha:
+
+- Data subscrição;
+- Montante subscrição;
+- Montante à data;
+- Taxa juro anual.
+
+Campos calculados:
+
+- Janeiro a Dezembro, preenchidos apenas nos meses do ciclo trimestral da subscrição.
+
+Fórmula por subscrição:
+
+```text
+juro trimestral líquido = Montante à data × Taxa juro anual ÷ 4 × 0.72
+```
+
+Regras da taxa:
+
+- aceita `3.638%`, `3,638%`, `3.638` e `0.03638`;
+- internamente normaliza para decimal;
+- apresenta sempre como percentagem com três casas decimais, por exemplo `3.638%`.
+
+Regras de ciclo:
+
+- subscrição em Janeiro, Abril, Julho ou Outubro: juros em Janeiro, Abril, Julho e Outubro;
+- subscrição em Fevereiro, Maio, Agosto ou Novembro: juros em Fevereiro, Maio, Agosto e Novembro;
+- subscrição em Março, Junho, Setembro ou Dezembro: juros em Março, Junho, Setembro e Dezembro.
+
+Totais iniciais esperados e cobertos por testes:
+
+- Total Montante subscrição: `34 000,00 €`;
+- Total Montante à data: `37 091,49 €`;
+- Ganho acumulado: `3 091,49 €`;
+- Janeiro/Abril/Julho/Outubro: `67,52 €`;
+- Fevereiro/Maio/Agosto/Novembro: `178,11 €`;
+- Março/Junho/Setembro/Dezembro: `–`.
+
+Notas de arredondamento:
+
+- os juros das linhas são calculados em cêntimos;
+- os totais mensais tratam diferenças de arredondamento ao cêntimo dentro do domínio, para preservar os totais de referência fornecidos;
+- não é usado `eval()`.
+
+Testes adicionados:
+
+- `src/domain/budget/igcp.test.ts`;
+- `src/components/igcp-management.test.tsx`;
+- `src/app/(app)/igcp/page.test.tsx`;
+- `src/components/app-shell.test.tsx`;
+- teste adicional em `src/app/(app)/orcamento/page.test.tsx` para confirmar que o Orçamento mensal não renderiza nem calcula a tabela IGCP.
+
+Validações técnicas desta implementação:
+
+- `npm.cmd run lint` passou;
+- `npm.cmd run typecheck` passou;
+- `npm.cmd test` passou com 32 ficheiros de teste e 237 testes; foi executado fora do sandbox porque o Vitest falhou no sandbox ao carregar `vitest.config.ts` na pasta OneDrive;
+- `npm.cmd run build` passou e o output inclui a rota `/igcp`;
+- `git diff --check` passou; apenas reportou avisos de normalização LF/CRLF em ficheiros editados.
+- a validação manual via servidor local ficou pendente: `next dev` e `next start` chegaram a escrever `Ready`, mas o processo `node` terminou logo de seguida e `127.0.0.1:3000` recusou ligação neste ambiente.
+
 ## 17. Formatação
 
 Toda a interface deve usar:
@@ -1480,6 +1581,8 @@ Testes mínimos da Fase 2:
 - tabela compacta.
 - Investimentos: domínio, XIRR, valorização mensal, CRUD de activos, fluxos, valorizações, eliminação segura, protecção histórica, UI sem notas, detalhe recolhível e integração com Orçamento/Património; **coberto por testes de domínio, serviço, actions, componente e página**
 - Histórico: séries de liquidez/orçamento, mês de referência, filtros de período com meses futuros, gráfico combinado, XIRR mensal por investimento/global, gaps e investimentos arquivados com histórico; **coberto por testes de domínio, componente e página**
+- IGCP: submenu, tabela autónoma, linhas iniciais, cálculo de juro trimestral líquido, retenção de 28%, distribuição mensal, totais, ganho acumulado, adição/remoção/edição, validação, persistência local e não interferência no Orçamento mensal; **coberto por testes de domínio, componente, página e navegação**
+- Header: layout compacto em linha única em desktop/laptop, logout à direita e link `IGCP` sem símbolo `%`; **coberto por teste de `AppShell`**
 
 ## 19. Comandos úteis
 

@@ -1,5 +1,23 @@
 # Decisions
 
+## 2026-07-01 — Header compacto em desktop
+
+- O header fica numa única linha horizontal em desktop/laptop, com logo/nome da app à esquerda, navegação ao centro/direita e `Terminar sessão` à direita.
+- A altura de desktop deve manter-se compacta, aproximadamente entre 64px e 76px.
+- A quebra do menu fica reservada para ecrãs pequenos/mobile, onde a largura deixa de ser suficiente.
+- A largura máxima do header foi aumentada para aproveitar melhor o espaço lateral disponível.
+- O menu `IGCP` usa um ícone neutro de documento/recibo (`ReceiptText`) em vez do ícone `%`, para que a leitura visual seja apenas `IGCP`.
+- Não houve alteração funcional aos menus, rotas, cálculos, persistência ou dados.
+
+## 2026-07-01 — IGCP autónomo com persistência local
+
+- O submenu `IGCP` foi criado como rota própria em `/igcp`, dentro do layout autenticado existente.
+- O módulo é deliberadamente autónomo: não lê nem escreve na tabela mensal, contas, Net Assets, movimentos previstos/realizados, Histórico ou Investimentos.
+- Não foi criada migration nem ligação nova a Supabase; os dados editados pelo utilizador ficam em `localStorage` na chave versionada `orcamento.igcp.rows.v1`.
+- A lógica financeira ficou centralizada em `src/domain/budget/igcp.ts`: parsing de datas/montantes/taxas, normalização da taxa anual, cálculo do juro trimestral líquido, distribuição mensal, totais e ganho acumulado.
+- A retenção na fonte é aplicada por factor `0.72`, equivalente a deduzir 28% ao juro trimestral bruto.
+- Os totais mensais tratam diferenças de arredondamento ao cêntimo dentro do domínio para preservar os totais iniciais fornecidos no pedido.
+
 ## 2026-07-01 — Expressões só calculam no commit
 
 - Durante a edição de `Movimentos realizados`, o input mantém um draft local com o texto bruto introduzido pelo utilizador.
